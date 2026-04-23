@@ -854,7 +854,7 @@ async function viewAuditTrail(clearanceId) {
         ${trail.map((e) => `
           <div class="audit-entry">
             <div class="audit-entry-header">
-              <span class="badge badge-${e.status === "success" ? "approved" : "rejected"}">${escapeHtml(e.action)}</span>
+              <span class="badge badge-${e.status === "success" ? "success" : "failure"}">${escapeHtml(e.action)}</span>
               <span class="audit-time">${formatDateTime(e.timestamp)}</span>
             </div>
             <div class="audit-entry-meta">
@@ -1047,7 +1047,7 @@ async function loadAuditContent(filters = {}) {
                       <td>${escapeHtml(e.actor_role || "-")}</td>
                       <td><code>${escapeHtml(e.action)}</code></td>
                       <td>${escapeHtml(e.resource_type)}${e.resource_id ? `<br><small class="text-muted">${escapeHtml(e.resource_id).slice(0, 8)}…</small>` : ""}</td>
-                      <td>${getStatusBadge(e.status === "success" ? "approved" : "rejected")}</td>
+                      <td>${getStatusBadge(e.status)}</td>
                       <td><small>${escapeHtml(e.ip_address || "-")}</small></td>
                       <td>${e.details && Object.keys(e.details).length
                         ? `<details><summary>view</summary><pre class="audit-details">${escapeHtml(JSON.stringify(e.details, null, 2))}</pre></details>`

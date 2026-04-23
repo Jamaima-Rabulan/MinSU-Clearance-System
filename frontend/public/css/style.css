@@ -2014,3 +2014,15 @@ body::before {
 .slip-status.pending {
     color: #fff !important;
 }
+
+/* Audit-specific status pills */
+.badge-success {
+    background: var(--success-bg);
+    color: var(--success);
+    border: 1px solid var(--success-border);
+}
+.badge-failure {
+    background: var(--error-bg);
+    color: var(--error);
+    border: 1px solid var(--error-border);
+}
