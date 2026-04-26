@@ -35,12 +35,14 @@ from sendgrid.helpers.mail import Mail, Email
 
 
 # ========== CONFIG ==========
-mongo_url = "mongodb+srv://jhamairabulan77_db_user:Jhamel29@cluster0.nksukoj.mongodb.net/?retryWrites=true&w=majority&tls=true"
-import certifi
-client = AsyncIOMotorClient(mongo_url, tlsCAFile=certifi.where())
-db = client[os.environ['DB_NAME']]
+mongo_url = os.environ.get("MONGO_URL")
 
-JWT_SECRET = os.environ['JWT_SECRET']
+client = AsyncIOMotorClient(mongo_url, tlsCAFile=certifi.where())
+
+db_name = os.environ.get("DB_NAME", "clearance_db")
+db = client[db_name]
+
+JWT_SECRET = os.environ.get('JWT_SECRET', 'dev_secret')
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
