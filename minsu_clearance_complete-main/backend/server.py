@@ -366,15 +366,27 @@ def get_client_ip(request: Request) -> str:
 @app.on_event("startup")
 async def startup():
     try:
-        await db.users.create_index("email", unique=True)
-        await db.audit_logs.create_index([("timestamp", -1)])
-        await db.clearances.create_index("student_id")
+        print("🚀 STARTUP BEGIN")
 
-        # Seed Superadmin (highest privilege)
+        await db.users.create_index("email", unique=True)
+        print("✅ users index created")
+
+        await db.audit_logs.create_index([("timestamp", -1)])
+        print("✅ audit_logs index created")
+
+        await db.clearances.create_index("student_id")
+        print("✅ clearances index created")
+
+        # Seed Superadmin
         sa_email = os.environ.get('SUPERADMIN_EMAIL', 'superadmin@minsu.edu.ph')
         sa_password = os.environ.get('SUPERADMIN_PASSWORD', 'Sup3rAdmin#2026')
+
+        print("🔍 Checking superadmin...")
+
         sa_existing = await db.users.find_one({"email": sa_email})
+
         if not sa_existing:
+            print("➕ Creating superadmin...")
             await db.users.insert_one({
                 "id": generate_uuid(),
                 "email": sa_email,
@@ -384,10 +396,20 @@ async def startup():
                 "email_verified": True,
                 "created_at": datetime.now(timezone.utc).isoformat()
             })
-            logger.info(f"Seeded superadmin: {sa_email}")
-        elif sa_existing.get("role") != "superadmin":
-            await db.users.update_one({"email": sa_email}, {"$set": {"role": "superadmin"}})
+            print("✅ Superadmin created")
 
+        elif sa_existing.get("role") != "superadmin":
+            print("🔄 Updating role to superadmin...")
+            await db.users.update_one(
+                {"email": sa_email},
+                {"$set": {"role": "superadmin"}}
+            )
+
+        print("🎉 STARTUP COMPLETE")
+
+    except Exception as e:
+        print("❌ STARTUP ERROR:", str(e))
+        raise e  # 🔥 THIS IS THE MOST IMPORTANT LINE
         # Seed admin
         admin_email = os.environ.get('ADMIN_EMAIL', 'admin@minsu.edu.ph')
         admin_password = os.environ.get('ADMIN_PASSWORD', 'Admin@123')
