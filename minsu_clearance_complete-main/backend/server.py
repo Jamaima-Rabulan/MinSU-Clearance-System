@@ -362,7 +362,6 @@ async def log_audit(actor_id: Optional[str], actor_email: Optional[str], actor_r
 def get_client_ip(request: Request) -> str:
     return request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
 
-# ========== STARTUP ==========
 @app.on_event("startup")
 async def startup():
     try:
@@ -381,12 +380,9 @@ async def startup():
         sa_email = os.environ.get('SUPERADMIN_EMAIL', 'superadmin@minsu.edu.ph')
         sa_password = os.environ.get('SUPERADMIN_PASSWORD', 'Sup3rAdmin#2026')
 
-        print("🔍 Checking superadmin...")
-
         sa_existing = await db.users.find_one({"email": sa_email})
 
         if not sa_existing:
-            print("➕ Creating superadmin...")
             await db.users.insert_one({
                 "id": generate_uuid(),
                 "email": sa_email,
@@ -396,10 +392,8 @@ async def startup():
                 "email_verified": True,
                 "created_at": datetime.now(timezone.utc).isoformat()
             })
-            print("✅ Superadmin created")
 
         elif sa_existing.get("role") != "superadmin":
-            print("🔄 Updating role to superadmin...")
             await db.users.update_one(
                 {"email": sa_email},
                 {"$set": {"role": "superadmin"}}
@@ -409,28 +403,7 @@ async def startup():
 
     except Exception as e:
         print("❌ STARTUP ERROR:", str(e))
-        raise e  # 🔥 THIS IS THE MOST IMPORTANT LINE
-        # Seed admin
-        admin_email = os.environ.get('ADMIN_EMAIL', 'admin@minsu.edu.ph')
-        admin_password = os.environ.get('ADMIN_PASSWORD', 'Admin@123')
-        existing = await db.users.find_one({"email": admin_email})
-        if not existing:
-            await db.users.insert_one({
-                "id": generate_uuid(),
-                "email": admin_email,
-                "password_hash": hash_password(admin_password),
-                "full_name": "System Administrator",
-                "role": "admin",
-                "email_verified": True,
-                "created_at": datetime.now(timezone.utc).isoformat()
-            })
-            logger.info(f"Seeded admin: {admin_email}")
-        elif not verify_password(admin_password, existing.get("password_hash", "")):
-            await db.users.update_one(
-                {"email": admin_email},
-                {"$set": {"password_hash": hash_password(admin_password), "email_verified": True}}
-            )
-            logger.info("Admin password updated")
+        raise e
 
 # ========== AUTH ROUTES ==========
 @api_router.post("/auth/register")
