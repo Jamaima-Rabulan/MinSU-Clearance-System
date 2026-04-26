@@ -1202,7 +1202,7 @@ async def api_root():
 
 # ========== APP CONFIG ==========
 from fastapi.middleware.cors import CORSMiddleware
-
+app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
