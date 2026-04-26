@@ -53,8 +53,12 @@ SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'jhamairabulan77@gmail.com')
 SENDER_NAME = os.environ.get('SENDER_NAME', 'MinSU Clearance System')
 
-UPLOAD_DIR = Path(os.environ.get('UPLOAD_DIR', '/app/backend/uploads'))
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR = Path(os.environ.get('UPLOAD_DIR', 'uploads'))
+
+try:
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+except Exception as e:
+    print("UPLOAD DIR ERROR:", e)
 
 # CORS allowlist (explicit origins; supports comma-separated env)
 _cors_env = os.environ.get('CORS_ORIGINS', '').strip()
