@@ -432,28 +432,6 @@ async def startup():
             )
             logger.info("Admin password updated")
 
-        # Seed faculty accounts (one per office) if missing
-        default_faculty_password = os.environ.get('DEFAULT_FACULTY_PASSWORD', 'Faculty@2026')
-        for office in OFFICES:
-            slug = office.lower().replace(' ', '').replace('/', '_').replace('-', '')
-            faculty_email = f"{slug}@minsu.edu.ph"
-            if not await db.users.find_one({"email": faculty_email}):
-                await db.users.insert_one({
-                    "id": generate_uuid(),
-                    "email": faculty_email,
-                    "password_hash": hash_password(default_faculty_password),
-                    "full_name": f"{office} Office",
-                    "role": "faculty",
-                    "office": office,
-                    "email_verified": True,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "seeded": True
-                })
-                logger.info(f"Seeded faculty: {faculty_email} ({office})")
-        logger.info("Startup complete")
-    except Exception as e:
-        logger.error(f"Startup error: {e}")
-
 # ========== AUTH ROUTES ==========
 @api_router.post("/auth/register")
 async def register(user_data: UserCreate, request: Request):
