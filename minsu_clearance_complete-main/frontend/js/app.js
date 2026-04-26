@@ -22,7 +22,7 @@ const api = {
     if (state.token) headers['Authorization'] = `Bearer ${state.token}`;
     if (options.body instanceof FormData) delete headers['Content-Type'];
 
-    const res = await fetch(`${API_BASE}/api${endpoint}`, { ...options, headers });
+    const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
   let data;
 try {
   data = await res.json();
