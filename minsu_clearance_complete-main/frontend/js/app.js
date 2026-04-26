@@ -72,10 +72,10 @@ function toast(message, type = 'info') {
 async function init() {
   state.token = localStorage.getItem(TOKEN_KEY);
   const userJson = localStorage.getItem(USER_KEY);
+
   if (state.token && userJson) {
     try {
       state.user = JSON.parse(userJson);
-      // Verify token is still valid
       const data = await api.call('/auth/me');
       state.user = data.user;
       localStorage.setItem(USER_KEY, JSON.stringify(state.user));
@@ -88,13 +88,16 @@ async function init() {
       state.view = 'auth';
     }
   }
+
+  // 🔥 LOAD CONSTANTS FIRST
   try {
     const c = await api.call('/constants');
     state.constants = c;
-  } catch (e) { /* okay */ }
+  } catch (e) {}
+
+  // 🔥 FORCE RE-RENDER AFTER DATA
   render();
 }
-
 // =========== RENDER ROUTER ===========
 function render() {
   const app = document.getElementById('app');
