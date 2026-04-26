@@ -37,6 +37,9 @@ from sendgrid.helpers.mail import Mail, Email
 # ========== CONFIG ==========
 mongo_url = os.environ.get("MONGO_URL")
 
+if not mongo_url:
+    raise Exception("MONGO_URL is not set")
+
 client = AsyncIOMotorClient(mongo_url, tlsCAFile=certifi.where())
 
 db_name = os.environ.get("DB_NAME", "clearance_db")
@@ -46,7 +49,7 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'dev_secret')
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
-SENDGRID_API_KEY ="SG.sNP8A_bWTp2GU56OK3pw_A.Gix-6Wbc8qDkZYZSXOF1ix62hak7LNPTpNml_9bfsE"
+SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'jhamairabulan77@gmail.com')
 SENDER_NAME = os.environ.get('SENDER_NAME', 'MinSU Clearance System')
 
