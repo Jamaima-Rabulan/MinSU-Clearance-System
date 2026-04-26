@@ -1201,11 +1201,14 @@ async def api_root():
     return {"message": "MinSU Clearance System API", "version": "2.0.0"}
 
 # ========== APP CONFIG ==========
-app.include_router(api_router)
+from fastapi.middleware.cors import CORSMiddleware
+
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=[
+        "https://minsu-clearance-system-1.onrender.com"
+    ],
     allow_credentials=True,
-    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
