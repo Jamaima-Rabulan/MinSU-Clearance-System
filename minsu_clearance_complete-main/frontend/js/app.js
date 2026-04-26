@@ -1,5 +1,5 @@
 // MinSU Clearance System - Main App (Vanilla JS SPA)
-const API_BASE = 'http://127.0.0.1:8000';
+const API_BASE = 'https://minsu-clearance-system.onrender.com';
 const TOKEN_KEY = 'minsu_token';
 const USER_KEY = 'minsu_user';
 
