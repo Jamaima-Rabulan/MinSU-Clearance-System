@@ -1,0 +1,12 @@
+{
+  "name": "minsu-clearance-frontend",
+  "version": "1.0.0",
+  "description": "MinSU Clearance System Frontend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

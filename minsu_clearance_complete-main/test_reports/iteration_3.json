@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 3 backend testing complete. 28 NEW tests for Admin Email Settings (GET/POST), test-email send, suggest-password, admin reset-password, self-service change-password, and audit-log entries — all 28 PASS. All 70 prior tests (iter-1 + iter-2) STILL PASS. Total 98/98 passing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "internal — /app/backend/server.py line 236 _send_email_sync",
+        "issue": "SendGridAPIClient is instantiated with module-level SENDGRID_API_KEY env var instead of the api_key parameter passed in. This means a DB-stored sendgrid_api_key override will NOT actually be used when sending emails — only the env value is. The endpoint /api/admin/settings correctly returns the DB-overridden masked key in GET responses, masking this bug. Fix: change `sg = SendGridAPIClient(SENDGRID_API_KEY)` to `sg = SendGridAPIClient(api_key)`."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3.py",
+    "/app/test_reports/pytest/iteration3_results.xml"
+  ],
+  "action_items": [
+    "Fix _send_email_sync to use the api_key parameter instead of the module-level SENDGRID_API_KEY env var (server.py line 236). Without this fix, the DB-override of the SendGrid API key has no effect on actual email delivery."
+  ],
+  "critical_code_review_comments": [
+    "BUG: server.py:236 — `SendGridAPIClient(SENDGRID_API_KEY)` should be `SendGridAPIClient(api_key)`. The DB-stored API-key override is fetched correctly by `get_email_settings` and passed into `_send_email_sync` via the `api_key` parameter, but the function then ignores it and uses the env constant. This silently breaks the entire purpose of the DB override.",
+    "MINOR: server.py:1089 — `if data.current_password == data.new_password` check happens AFTER `validate_password_strength`. Since both passwords are equal in this branch, the order doesn't matter, but logically the 'must be different' check could happen before complexity validation for clearer error flow.",
+    "MINOR: /api/admin/settings GET issues 3 separate find_one() round-trips per call to compute the source map. Could be reduced to a single find({key: {$in: [...]}}) for efficiency.",
+    "OK: app_settings stored with $set and updated_by/updated_at audit metadata — good.",
+    "OK: Empty-string convention for clearing override is intuitive and matches POST contract.",
+    "OK: suggest-password uses cryptographically-secure secrets module and validates against the same strength function — good.",
+    "OK: API key is only ever returned masked (prefix...suffix). 'sendgrid_api_key' raw value never leaves the server. Good security posture.",
+    "OK: All 3 new admin endpoints + change-password are protected by Depends(require_admin) / Depends(get_current_user)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration3.py (NEW)",
+    "/app/test_reports/pytest/iteration3_results.xml (NEW)"
+  ],
+  "success_rate": {
+    "backend": "100% (28/28 iter-3 + 70/70 regression = 98/98)",
+    "frontend": "not tested (per request: backend only)"
+  },
+  "test_credentials": "admin@minsu.edu.ph / Admin@123 ; registrar@minsu.edu.ph / Faculty@2026",
+  "seed_data_creation": "Each test run creates one TEST_it3_<rand>@minsu.edu.ph faculty user via /api/admin/create-user, exercises reset/change-password against it, and deletes via /api/admin/users/{id} in fixture teardown. app_settings collection is also cleaned to env-default state via autouse session-scoped fixture. Verified post-run: db.app_settings is empty.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 3 file: /app/backend/tests/test_iteration3.py. All 28 tests pass. Pattern reused: fixtures `api`, `admin_token`, `admin_headers`, `faculty_token`, `test_user` (auto-created+cleaned). Settings cleanup fixture is autouse session-scoped and clears DB overrides. SendGrid sender is still unverified — test-email returns 500 with 'sender may not be verified' detail (asserted). The single latent bug (server.py:236 using SENDGRID_API_KEY instead of api_key parameter) is reported but does NOT cause test failure because tests don't depend on a DB-stored key actually being used during sending — they only verify it is stored & masked correctly.",
+  "rca of the issue": "No bugs blocking iter-3 tests. The latent _send_email_sync bug (SENDGRID_API_KEY vs api_key) is unreachable in current tests because (a) the env-default key is what we want SendGrid to use anyway and (b) the sender is unverified so SendGrid always returns 403 regardless. It will surface only when an admin actually configures a different SendGrid key via the UI and expects emails to flow under the new key."
+}
