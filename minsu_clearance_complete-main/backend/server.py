@@ -365,6 +365,56 @@ async def log_audit(actor_id: Optional[str], actor_email: Optional[str], actor_r
 def get_client_ip(request: Request) -> str:
     return request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
 
+# ========== BRUTE FORCE PROTECTION ==========
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_LOCKOUT_MINUTES = 15
+
+async def check_login_lockout(email: str, ip: str):
+    """Raise HTTPException if this (email + ip) is currently locked out."""
+    identifier = f"{ip}:{email}"
+    record = await db.login_attempts.find_one({"identifier": identifier})
+    if not record:
+        return
+    locked_until = record.get("locked_until")
+    if locked_until:
+        try:
+            lu = datetime.fromisoformat(locked_until)
+            now = datetime.now(timezone.utc)
+            if lu > now:
+                remaining = int((lu - now).total_seconds() / 60) + 1
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Too many failed attempts. Try again in {remaining} minute(s)."
+                )
+        except ValueError:
+            pass
+
+async def record_failed_attempt(email: str, ip: str):
+    """Increment failed attempt counter; lock out after LOGIN_MAX_ATTEMPTS."""
+    identifier = f"{ip}:{email}"
+    now = datetime.now(timezone.utc)
+    record = await db.login_attempts.find_one({"identifier": identifier})
+    attempts = (record.get("attempts", 0) if record else 0) + 1
+    update = {
+        "identifier": identifier,
+        "email": email,
+        "ip": ip,
+        "attempts": attempts,
+        "last_attempt": now.isoformat()
+    }
+    if attempts >= LOGIN_MAX_ATTEMPTS:
+        update["locked_until"] = (now + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()
+    await db.login_attempts.update_one(
+        {"identifier": identifier},
+        {"$set": update},
+        upsert=True
+    )
+    return attempts
+
+async def clear_login_attempts(email: str, ip: str):
+    identifier = f"{ip}:{email}"
+    await db.login_attempts.delete_one({"identifier": identifier})
+
 @app.on_event("startup")
 async def startup():
     try:
@@ -378,6 +428,9 @@ async def startup():
 
         await db.clearances.create_index("student_id")
         print("✅ clearances index created")
+
+        await db.login_attempts.create_index("identifier", unique=True)
+        print("✅ login_attempts index created")
 
         # Seed Superadmin
         sa_email = os.environ.get('SUPERADMIN_EMAIL', 'superadmin@minsu.edu.ph')
@@ -524,15 +577,34 @@ async def resend_verification(data: ResendVerification):
 @api_router.post("/auth/login")
 async def login(credentials: UserLogin, request: Request):
     email = credentials.email.lower()
+    ip = get_client_ip(request)
+
+    # Brute force lockout check (5 failed attempts → 15 min lockout per email+IP)
+    await check_login_lockout(email, ip)
+
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(credentials.password, user["password_hash"]):
-        await log_audit(None, email, None, "LOGIN_FAILED", "user", None, {"reason": "invalid_credentials"}, get_client_ip(request))
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        attempts = await record_failed_attempt(email, ip)
+        await log_audit(None, email, None, "LOGIN_FAILED", "user", None,
+                        {"reason": "invalid_credentials", "attempts": attempts}, ip)
+        remaining = max(0, LOGIN_MAX_ATTEMPTS - attempts)
+        if attempts >= LOGIN_MAX_ATTEMPTS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many failed attempts. Account temporarily locked for {LOGIN_LOCKOUT_MINUTES} minutes."
+            )
+        msg = "Invalid email or password"
+        if remaining <= 2:
+            msg = f"Invalid email or password. {remaining} attempt(s) remaining before lockout."
+        raise HTTPException(status_code=401, detail=msg)
     if not user.get("email_verified", False):
         raise HTTPException(status_code=403, detail="Please verify your email first. Check your inbox for the code.")
 
+    # Successful login — clear any failed attempts
+    await clear_login_attempts(email, ip)
+
     token = create_access_token(user["id"], user["email"], user["role"])
-    await log_audit(user["id"], email, user.get("role"), "LOGIN_SUCCESS", "user", user["id"], None, get_client_ip(request))
+    await log_audit(user["id"], email, user.get("role"), "LOGIN_SUCCESS", "user", user["id"], None, ip)
 
     return {
         "success": True,
