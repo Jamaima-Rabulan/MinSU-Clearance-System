@@ -1,5 +1,5 @@
 // MinSU Clearance System - Main App (Vanilla JS SPA)
-const API_BASE = 'https://minsu-clearance-system.onrender.com';
+const API_BASE = 'https://minsu-clearance-system.onrender.com/api';
 const TOKEN_KEY = 'minsu_token';
 const USER_KEY = 'minsu_user';
 
@@ -73,6 +73,16 @@ async function init() {
   state.token = localStorage.getItem(TOKEN_KEY);
   const userJson = localStorage.getItem(USER_KEY);
 
+  // Public QR verification route — no auth required
+  const urlParams = new URLSearchParams(window.location.search);
+  const verifyId = urlParams.get('verify');
+  if (verifyId) {
+    state.verifyId = verifyId;
+    state.view = 'verify-slip';
+    render();
+    return;
+  }
+
   if (state.token && userJson) {
     try {
       state.user = JSON.parse(userJson);
@@ -102,7 +112,8 @@ async function init() {
 function render() {
   const app = document.getElementById('app');
   app.innerHTML = '';
-  if (state.view === 'auth') app.appendChild(renderAuth());
+  if (state.view === 'verify-slip') app.appendChild(renderVerifySlip());
+  else if (state.view === 'auth') app.appendChild(renderAuth());
   else if (state.view === 'verify') app.appendChild(renderVerify());
   else if (state.view === 'forgot') app.appendChild(renderForgot());
   else if (state.view === 'reset') app.appendChild(renderReset());
@@ -552,9 +563,13 @@ function renderClearancesList() {
 
   const tableWrap = DOM.el('div', { class: 'table-wrap', id: 'clearances-table' });
   card.appendChild(tableWrap);
+  const paginationWrap = DOM.el('div', { class: 'pagination-wrap' });
+  card.appendChild(paginationWrap);
   wrap.appendChild(card);
 
   const selected = new Set();
+  let currentPage = 1;
+  let pageSize = 10;
 
   function refreshBulkBar() {
     if (state.user.role !== 'faculty') return;
@@ -579,32 +594,57 @@ function renderClearancesList() {
   }
 
   async function bulkProcess(action) {
-    const comments = action === 'reject' ? prompt('Reason for rejecting all selected clearances:') : (prompt('Optional comments for batch approval:') || '');
-    if (action === 'reject' && !comments) { toast('Reason required for rejection', 'warning'); return; }
-    try {
-      const res = await api.call('/clearances/bulk-process', { method: 'POST', body: JSON.stringify({
-        clearance_ids: Array.from(selected), action, comments: comments || null
-      })});
-      toast(`Processed ${res.summary.processed}, skipped ${res.summary.skipped}, fully approved ${res.summary.fully_approved}`, 'success');
-      selected.clear();
-      load();
-    } catch (err) { toast(err.message, 'error'); }
+    if (action === 'reject') {
+      const comments = prompt('Reason for rejecting all selected clearances:');
+      if (!comments) { toast('Reason required for rejection', 'warning'); return; }
+      try {
+        const res = await api.call('/clearances/bulk-process', { method: 'POST', body: JSON.stringify({
+          clearance_ids: Array.from(selected), action, comments
+        })});
+        toast(`Processed ${res.summary.processed}, skipped ${res.summary.skipped}`, 'success');
+        selected.clear();
+        load();
+      } catch (err) { toast(err.message, 'error'); }
+      return;
+    }
+    // Bulk approve: open signature modal (one signature applied to all selected)
+    openSignatureModal({
+      title: `Sign & Approve ${selected.size} Clearance${selected.size > 1 ? 's' : ''}`,
+      confirmLabel: 'Sign & Approve All',
+      onConfirm: async (sig, comments) => {
+        try {
+          const res = await api.call('/clearances/bulk-process', { method: 'POST', body: JSON.stringify({
+            clearance_ids: Array.from(selected), action: 'approve', comments: comments || null, ...sig
+          })});
+          toast(`Processed ${res.summary.processed}, skipped ${res.summary.skipped}, fully approved ${res.summary.fully_approved}`, 'success');
+          selected.clear();
+          load();
+        } catch (err) { toast(err.message, 'error'); throw err; }
+      }
+    });
   }
 
   async function load() {
     tableWrap.innerHTML = '<div class="text-center" style="padding:40px"><span class="spinner"></span></div>';
+    paginationWrap.innerHTML = '';
     try {
       const params = new URLSearchParams();
       if (statusSel.value) params.set('status', statusSel.value);
       if (courseSel && courseSel.value) params.set('course', courseSel.value);
       if (yearSel && yearSel.value) params.set('year_level', yearSel.value);
       if (sectionSel && sectionSel.value) params.set('section', sectionSel.value);
-      params.set('page_size', '100');
+      params.set('page', String(currentPage));
+      params.set('page_size', String(pageSize));
       const data = await api.call(`/clearances/list?${params}`);
       tableWrap.innerHTML = '';
       if (!data.clearances.length) {
         tableWrap.appendChild(DOM.el('div', { class: 'empty-state' }, [DOM.el('i', { class: 'fa-solid fa-file-circle-xmark' }), DOM.el('p', { text: 'No clearances found' })]));
         refreshBulkBar();
+        if (data.pagination && data.pagination.total_count > 0) {
+          paginationWrap.appendChild(renderPagination(data.pagination, pageSize,
+            (p) => { currentPage = p; load(); },
+            (s) => { pageSize = s; currentPage = 1; load(); }));
+        }
         return;
       }
       const table = DOM.el('table');
@@ -661,22 +701,82 @@ function renderClearancesList() {
       table.appendChild(tbody);
       tableWrap.appendChild(table);
       refreshBulkBar();
+      if (data.pagination) {
+        paginationWrap.appendChild(renderPagination(data.pagination, pageSize,
+          (p) => { currentPage = p; load(); },
+          (s) => { pageSize = s; currentPage = 1; load(); }));
+      }
     } catch (err) {
       tableWrap.innerHTML = '';
       tableWrap.appendChild(DOM.el('div', { class: 'alert error' }, [DOM.el('i', { class: 'fa-solid fa-circle-exclamation' }), err.message]));
     }
   }
 
-  statusSel.addEventListener('change', load);
-  if (courseSel) courseSel.addEventListener('change', load);
-  if (yearSel) yearSel.addEventListener('change', load);
-  if (sectionSel) sectionSel.addEventListener('change', load);
+  statusSel.addEventListener('change', () => { currentPage = 1; load(); });
+  if (courseSel) courseSel.addEventListener('change', () => { currentPage = 1; load(); });
+  if (yearSel) yearSel.addEventListener('change', () => { currentPage = 1; load(); });
+  if (sectionSel) sectionSel.addEventListener('change', () => { currentPage = 1; load(); });
   setTimeout(load, 0);
   return wrap;
 }
 
 function statusBadge(s) {
-  return DOM.el('span', { class: `badge ${s}`, text: (s || 'pending').toUpperCase() });
+  return DOM.el('span', { class: `badge ${s || 'pending'}`, text: (s || 'pending').toUpperCase() });
+}
+
+// =========== PAGINATION CONTROLS ===========
+function renderPagination(pagination, pageSize, onPageChange, onSizeChange) {
+  const { page = 1, total_pages = 1, total_count = 0, has_next, has_prev } = pagination || {};
+  const wrap = DOM.el('div', { class: 'pagination', 'data-testid': 'pagination' });
+
+  const info = DOM.el('div', { class: 'pagination-info' });
+  const from = total_count === 0 ? 0 : (page - 1) * pageSize + 1;
+  const to = Math.min(page * pageSize, total_count);
+  info.textContent = `Showing ${from}–${to} of ${total_count}`;
+  wrap.appendChild(info);
+
+  const right = DOM.el('div', { class: 'pagination-controls' });
+
+  // Page size selector
+  const sizeWrap = DOM.el('label', { class: 'page-size' });
+  sizeWrap.appendChild(DOM.el('span', { text: 'Rows:' }));
+  const sizeSel = DOM.el('select', { 'data-testid': 'page-size-select' }, [10, 25, 50, 100].map(n => {
+    const o = DOM.el('option', { value: String(n) }, String(n));
+    if (n === pageSize) o.selected = true;
+    return o;
+  }));
+  sizeSel.addEventListener('change', () => onSizeChange(parseInt(sizeSel.value)));
+  sizeWrap.appendChild(sizeSel);
+  right.appendChild(sizeWrap);
+
+  // Prev
+  const prev = DOM.el('button', { class: 'btn btn-sm btn-outline', 'data-testid': 'page-prev', disabled: !has_prev && page <= 1, onClick: () => onPageChange(Math.max(1, page - 1)) }, [DOM.el('i', { class: 'fa-solid fa-chevron-left' }), 'Prev']);
+  right.appendChild(prev);
+
+  // Page numbers (windowed)
+  const nums = DOM.el('div', { class: 'page-nums' });
+  const tp = Math.max(1, total_pages);
+  const windowStart = Math.max(1, Math.min(page - 2, tp - 4));
+  const windowEnd = Math.min(tp, Math.max(5, page + 2));
+  if (windowStart > 1) {
+    nums.appendChild(DOM.el('button', { class: 'btn btn-sm btn-ghost', onClick: () => onPageChange(1) }, '1'));
+    if (windowStart > 2) nums.appendChild(DOM.el('span', { class: 'page-ellipsis', text: '…' }));
+  }
+  for (let p = windowStart; p <= windowEnd; p++) {
+    nums.appendChild(DOM.el('button', { class: `btn btn-sm ${p === page ? 'btn-primary' : 'btn-ghost'}`, 'data-testid': `page-${p}`, onClick: () => onPageChange(p) }, String(p)));
+  }
+  if (windowEnd < tp) {
+    if (windowEnd < tp - 1) nums.appendChild(DOM.el('span', { class: 'page-ellipsis', text: '…' }));
+    nums.appendChild(DOM.el('button', { class: 'btn btn-sm btn-ghost', onClick: () => onPageChange(tp) }, String(tp)));
+  }
+  right.appendChild(nums);
+
+  // Next
+  const next = DOM.el('button', { class: 'btn btn-sm btn-outline', 'data-testid': 'page-next', disabled: !has_next && page >= tp, onClick: () => onPageChange(page + 1) }, ['Next', DOM.el('i', { class: 'fa-solid fa-chevron-right' })]);
+  right.appendChild(next);
+
+  wrap.appendChild(right);
+  return wrap;
 }
 function formatDate(s) {
   if (!s) return '—';
@@ -831,7 +931,7 @@ function renderClearanceDetail() {
     const apprTable = DOM.el('table', { class: 'slip-table' });
     apprTable.appendChild(DOM.el('thead', {}, DOM.el('tr', {}, [
       DOM.el('th', { text: 'CLEARING OFFICERS' }),
-      DOM.el('th', { text: 'REMARKS' }),
+      DOM.el('th', { text: 'SIGNATURE' }),
       DOM.el('th', { text: 'DATE' }),
       DOM.el('th', { text: 'APPROVAL CODE' })
     ])));
@@ -839,8 +939,19 @@ function renderClearanceDetail() {
     (c.approvals || []).forEach(a => {
       const tr = DOM.el('tr');
       tr.appendChild(DOM.el('td', { text: a.office, class: 'slip-officer' }));
-      const remarks = a.status === 'approved' ? (a.comments || 'Cleared') : a.status === 'rejected' ? `Rejected: ${a.comments || ''}` : '';
-      tr.appendChild(DOM.el('td', { text: remarks }));
+      const sigCell = DOM.el('td', { class: 'slip-sig-cell' });
+      if (a.status === 'approved') {
+        if (a.signature_type === 'drawn' && a.signature_image) {
+          sigCell.appendChild(DOM.el('img', { src: a.signature_image, alt: 'Signature', class: 'slip-sig-img' }));
+        } else if (a.signature_type === 'typed' && a.signature_name) {
+          sigCell.appendChild(DOM.el('div', { class: 'slip-sig-typed', text: a.signature_name }));
+        }
+        sigCell.appendChild(DOM.el('div', { class: 'slip-sig-name', text: a.approved_by_name || '' }));
+        if (a.comments) sigCell.appendChild(DOM.el('div', { class: 'slip-sig-remarks', text: a.comments }));
+      } else if (a.status === 'rejected') {
+        sigCell.appendChild(DOM.el('div', { class: 'slip-rejected', text: `REJECTED: ${a.comments || ''}` }));
+      }
+      tr.appendChild(sigCell);
       tr.appendChild(DOM.el('td', { text: a.approved_at ? formatDate(a.approved_at) : '' }));
       tr.appendChild(DOM.el('td', { text: a.approval_code || '', class: 'slip-code' }));
       apprBody.appendChild(tr);
@@ -875,6 +986,23 @@ function renderClearanceDetail() {
       DOM.el('p', { class: 'slip-id', text: `Clearance ID: ${c.id}` }),
       DOM.el('p', { class: 'slip-note', text: 'Note: This document requires physical validation signature to be official.' })
     ]));
+
+    // QR code for verification (shown once all offices have approved)
+    if (c.overall_status === 'approved' && typeof QRCode !== 'undefined') {
+      const qrBlock = DOM.el('div', { class: 'slip-qr-block' });
+      qrBlock.appendChild(DOM.el('div', { class: 'slip-qr-text' }, [
+        DOM.el('strong', { text: 'SCAN TO VERIFY' }),
+        DOM.el('p', { text: 'Any phone camera can scan this QR. It opens a public verification page with the SHA-256 signature hash for every office. Tampered or photoshopped slips will fail to match.' })
+      ]));
+      const qrCanvas = DOM.el('canvas', { class: 'slip-qr-canvas' });
+      qrBlock.appendChild(qrCanvas);
+      slip.appendChild(qrBlock);
+
+      const verifyUrl = `${window.location.origin}${window.location.pathname}?verify=${c.id}`;
+      QRCode.toCanvas(qrCanvas, verifyUrl, { width: 140, margin: 1, color: { dark: '#0f3d24', light: '#ffffff' } }, (err) => {
+        if (err) console.warn('QR generation failed', err);
+      });
+    }
 
     card.appendChild(slip);
 
@@ -987,18 +1115,133 @@ function renderClearanceDetail() {
 }
 
 async function processClearance(id, action) {
-  const comments = action === 'reject' ? prompt('Reason for rejection:') : prompt('Optional comments:') || '';
-  if (action === 'reject' && !comments) { toast('Reason is required for rejection', 'warning'); return; }
-  try {
-    const data = await api.call(`/clearances/${id}/process`, { method: 'POST', body: JSON.stringify({ action, comments: comments || null }) });
-    toast(`Clearance ${action}d successfully`, 'success');
-    render();
-  } catch (err) { toast(err.message, 'error'); }
+  if (action === 'reject') {
+    const comments = prompt('Reason for rejection:');
+    if (!comments) { toast('Reason is required for rejection', 'warning'); return; }
+    try {
+      await api.call(`/clearances/${id}/process`, { method: 'POST', body: JSON.stringify({ action, comments }) });
+      toast(`Clearance rejected`, 'success');
+      render();
+    } catch (err) { toast(err.message, 'error'); }
+    return;
+  }
+  // Approve path: open e-signature modal
+  openSignatureModal({
+    title: 'Sign & Approve Clearance',
+    confirmLabel: 'Sign & Approve',
+    onConfirm: async (sig, comments) => {
+      try {
+        await api.call(`/clearances/${id}/process`, {
+          method: 'POST',
+          body: JSON.stringify({ action: 'approve', comments: comments || null, ...sig })
+        });
+        toast('Clearance approved and signed', 'success');
+        render();
+      } catch (err) { toast(err.message, 'error'); throw err; }
+    }
+  });
+}
+
+// =========== E-SIGNATURE MODAL ===========
+function openSignatureModal({ title, confirmLabel = 'Sign', onConfirm, showComments = true }) {
+  const body = DOM.el('div', { class: 'sig-modal' });
+  body.appendChild(DOM.el('p', { class: 'text-muted mb-16', text: 'Draw your signature below or type your full name. A unique approval code and SHA-256 hash will be generated to prevent tampering.' }));
+
+  // Tabs
+  const tabs = DOM.el('div', { class: 'sig-tabs' });
+  const drawTab = DOM.el('button', { type: 'button', class: 'sig-tab active', 'data-testid': 'sig-tab-draw' }, [DOM.el('i', { class: 'fa-solid fa-signature' }), 'Draw']);
+  const typeTab = DOM.el('button', { type: 'button', class: 'sig-tab', 'data-testid': 'sig-tab-type' }, [DOM.el('i', { class: 'fa-solid fa-keyboard' }), 'Type']);
+  tabs.appendChild(drawTab); tabs.appendChild(typeTab);
+  body.appendChild(tabs);
+
+  // Draw panel (canvas)
+  const drawPanel = DOM.el('div', { class: 'sig-panel sig-draw-panel' });
+  const canvas = DOM.el('canvas', { width: '560', height: '180', class: 'sig-canvas', 'data-testid': 'sig-canvas' });
+  drawPanel.appendChild(canvas);
+  const drawActions = DOM.el('div', { class: 'flex gap-8 mt-8' });
+  drawActions.appendChild(DOM.el('button', { type: 'button', class: 'btn btn-sm btn-outline', 'data-testid': 'sig-clear-btn', onClick: () => { const ctx = canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height); hasStroke = false; } }, [DOM.el('i', { class: 'fa-solid fa-eraser' }), 'Clear']));
+  drawPanel.appendChild(drawActions);
+  drawPanel.appendChild(DOM.el('p', { class: 'input-help mt-8', text: 'Use mouse or finger to sign on the pad.' }));
+  body.appendChild(drawPanel);
+
+  // Type panel
+  const typePanel = DOM.el('div', { class: 'sig-panel sig-type-panel', style: { display: 'none' } });
+  typePanel.appendChild(DOM.el('div', { class: 'form-group' }, [
+    DOM.el('label', { text: 'Type your full name' }),
+    DOM.el('input', { type: 'text', class: 'sig-type-input', 'data-testid': 'sig-type-input', placeholder: 'e.g. Juan Dela Cruz' })
+  ]));
+  const preview = DOM.el('div', { class: 'sig-type-preview', text: state.user.full_name });
+  typePanel.appendChild(DOM.el('label', { class: 'mt-8', text: 'Preview' }));
+  typePanel.appendChild(preview);
+  const typeInput = typePanel.querySelector('.sig-type-input');
+  typeInput.value = state.user.full_name;
+  typeInput.addEventListener('input', () => { preview.textContent = typeInput.value || state.user.full_name; });
+  body.appendChild(typePanel);
+
+  // Comments
+  let commentsInput = null;
+  if (showComments) {
+    body.appendChild(DOM.el('div', { class: 'form-group mt-16' }, [
+      DOM.el('label', { text: 'Optional comments' }),
+      (commentsInput = DOM.el('input', { type: 'text', 'data-testid': 'sig-comments-input', placeholder: 'e.g. Cleared, no pending obligations' }))
+    ]));
+  }
+
+  // Tab switching
+  let activeMode = 'drawn';
+  drawTab.addEventListener('click', () => { activeMode = 'drawn'; drawTab.classList.add('active'); typeTab.classList.remove('active'); drawPanel.style.display = ''; typePanel.style.display = 'none'; });
+  typeTab.addEventListener('click', () => { activeMode = 'typed'; typeTab.classList.add('active'); drawTab.classList.remove('active'); drawPanel.style.display = 'none'; typePanel.style.display = ''; });
+
+  // Canvas drawing
+  const ctx = canvas.getContext('2d');
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.strokeStyle = '#1a3a63';
+  let drawing = false, hasStroke = false;
+  const pos = (e) => {
+    const r = canvas.getBoundingClientRect();
+    const sx = canvas.width / r.width, sy = canvas.height / r.height;
+    const p = e.touches ? e.touches[0] : e;
+    return { x: (p.clientX - r.left) * sx, y: (p.clientY - r.top) * sy };
+  };
+  const start = (e) => { e.preventDefault(); drawing = true; const { x, y } = pos(e); ctx.beginPath(); ctx.moveTo(x, y); };
+  const move = (e) => { if (!drawing) return; e.preventDefault(); const { x, y } = pos(e); ctx.lineTo(x, y); ctx.stroke(); hasStroke = true; };
+  const stop = () => { drawing = false; };
+  canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', move);
+  canvas.addEventListener('mouseup', stop); canvas.addEventListener('mouseleave', stop);
+  canvas.addEventListener('touchstart', start, { passive: false });
+  canvas.addEventListener('touchmove', move, { passive: false });
+  canvas.addEventListener('touchend', stop);
+
+  // Actions
+  const actions = DOM.el('div', { class: 'flex gap-8 mt-24', style: { justifyContent: 'flex-end' } });
+  const cancelBtn = DOM.el('button', { type: 'button', class: 'btn btn-outline', onClick: () => modalCtx.close() }, 'Cancel');
+  const confirmBtn = DOM.el('button', { type: 'button', class: 'btn btn-primary', 'data-testid': 'sig-confirm-btn', onClick: async () => {
+    let sig;
+    if (activeMode === 'drawn') {
+      if (!hasStroke) { toast('Please draw your signature first', 'warning'); return; }
+      sig = { signature_type: 'drawn', signature_image: canvas.toDataURL('image/png'), signature_name: null };
+    } else {
+      const name = (typeInput.value || '').trim();
+      if (!name) { toast('Please type your name', 'warning'); return; }
+      sig = { signature_type: 'typed', signature_name: name, signature_image: null };
+    }
+    confirmBtn.disabled = true; confirmBtn.textContent = 'Signing...';
+    try {
+      await onConfirm(sig, commentsInput ? commentsInput.value : '');
+      modalCtx.close();
+    } catch (e) {
+      confirmBtn.disabled = false; confirmBtn.innerHTML = `<i class="fa-solid fa-signature"></i> ${confirmLabel}`;
+    }
+  }}, [DOM.el('i', { class: 'fa-solid fa-signature' }), confirmLabel]);
+  actions.appendChild(cancelBtn); actions.appendChild(confirmBtn);
+  body.appendChild(actions);
+
+  const modalCtx = showModal(body, { title, size: 'large' });
+  return modalCtx;
 }
 
 async function downloadAttachment(clearanceId, attachmentId) {
   try {
-    const res = await fetch(`${API_BASE}/api/clearances/${clearanceId}/attachments/${attachmentId}/download`, {
+    const res = await fetch(`${API_BASE}/clearances/${clearanceId}/attachments/${attachmentId}/download`, {
       headers: { Authorization: `Bearer ${state.token}` }
     });
     if (!res.ok) throw new Error('Download failed');
@@ -1025,13 +1268,21 @@ function renderUsersPage() {
   card.appendChild(filters);
   const tableWrap = DOM.el('div', { class: 'table-wrap' });
   card.appendChild(tableWrap);
+  const paginationWrap = DOM.el('div', { class: 'pagination-wrap' });
+  card.appendChild(paginationWrap);
   wrap.appendChild(card);
+
+  let currentPage = 1;
+  let pageSize = 10;
 
   const load = async () => {
     tableWrap.innerHTML = '<div class="text-center" style="padding:40px"><span class="spinner"></span></div>';
+    paginationWrap.innerHTML = '';
     try {
       const params = new URLSearchParams();
       if (search.value) params.set('search', search.value);
+      params.set('page', String(currentPage));
+      params.set('page_size', String(pageSize));
       const data = await api.call(`/admin/users?${params}`);
       tableWrap.innerHTML = '';
       const t = DOM.el('table');
@@ -1075,13 +1326,18 @@ function renderUsersPage() {
       });
       t.appendChild(tb);
       tableWrap.appendChild(t);
+      if (data.pagination) {
+        paginationWrap.appendChild(renderPagination(data.pagination, pageSize,
+          (p) => { currentPage = p; load(); },
+          (s) => { pageSize = s; currentPage = 1; load(); }));
+      }
     } catch (err) {
       tableWrap.innerHTML = '';
       tableWrap.appendChild(DOM.el('div', { class: 'alert error' }, err.message));
     }
   };
   let timer;
-  search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 400); });
+  search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { currentPage = 1; load(); }, 400); });
   setTimeout(load, 0);
   return wrap;
 }
@@ -1150,19 +1406,31 @@ function renderAuditLog() {
   card.appendChild(filters);
   const tableWrap = DOM.el('div', { class: 'table-wrap' });
   card.appendChild(tableWrap);
+  const paginationWrap = DOM.el('div', { class: 'pagination-wrap' });
+  card.appendChild(paginationWrap);
   wrap.appendChild(card);
+
+  let currentPage = 1;
+  let pageSize = 10;
 
   const load = async () => {
     tableWrap.innerHTML = '<div class="text-center" style="padding:40px"><span class="spinner"></span></div>';
+    paginationWrap.innerHTML = '';
     try {
       const params = new URLSearchParams();
       if (actionInp.value) params.set('action', actionInp.value);
       if (emailInp.value) params.set('actor_email', emailInp.value);
-      params.set('page_size', '100');
+      params.set('page', String(currentPage));
+      params.set('page_size', String(pageSize));
       const data = await api.call(`/admin/audit-logs?${params}`);
       tableWrap.innerHTML = '';
       if (!data.logs.length) {
         tableWrap.appendChild(DOM.el('div', { class: 'empty-state' }, [DOM.el('i', { class: 'fa-solid fa-clipboard-list' }), DOM.el('p', { text: 'No audit log entries match.' })]));
+        if (data.pagination && data.pagination.total_count > 0) {
+          paginationWrap.appendChild(renderPagination(data.pagination, pageSize,
+            (p) => { currentPage = p; load(); },
+            (s) => { pageSize = s; currentPage = 1; load(); }));
+        }
         return;
       }
       const t = DOM.el('table');
@@ -1185,13 +1453,18 @@ function renderAuditLog() {
       });
       t.appendChild(tb);
       tableWrap.appendChild(t);
+      if (data.pagination) {
+        paginationWrap.appendChild(renderPagination(data.pagination, pageSize,
+          (p) => { currentPage = p; load(); },
+          (s) => { pageSize = s; currentPage = 1; load(); }));
+      }
     } catch (err) {
       tableWrap.innerHTML = '';
       tableWrap.appendChild(DOM.el('div', { class: 'alert error' }, err.message));
     }
   };
   let timer;
-  [actionInp, emailInp].forEach(i => i.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 400); }));
+  [actionInp, emailInp].forEach(i => i.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { currentPage = 1; load(); }, 400); }));
   setTimeout(load, 0);
   return wrap;
 }
@@ -1400,6 +1673,100 @@ function renderProfile() {
   pwCard.appendChild(form);
   wrap.appendChild(pwCard);
 
+  return wrap;
+}
+
+// =========== PUBLIC VERIFICATION PAGE (QR landing) ===========
+function renderVerifySlip() {
+  const wrap = DOM.el('div', { class: 'verify-page' });
+  const card = DOM.el('div', { class: 'verify-card' });
+  card.innerHTML = '<div class="text-center" style="padding:60px"><span class="spinner"></span><p class="mt-16" style="color:var(--ink-500);">Verifying clearance…</p></div>';
+  wrap.appendChild(card);
+
+  // Use API_BASE (which already includes /api) to hit the public endpoint
+  fetch(`${API_BASE}/public/clearances/${state.verifyId}/verify`)
+    .then(async r => {
+      if (!r.ok) { const t = await r.text(); throw new Error(t || `HTTP ${r.status}`); }
+      return r.json();
+    })
+    .then(data => {
+      card.innerHTML = '';
+      const status = data.overall_status || 'pending';
+      const isApproved = status === 'approved';
+      const isRejected = status === 'rejected';
+
+      // Header banner
+      const banner = DOM.el('div', { class: `verify-banner ${isApproved ? 'ok' : isRejected ? 'bad' : 'warn'}` });
+      banner.appendChild(DOM.el('i', { class: `fa-solid fa-${isApproved ? 'shield-check' : isRejected ? 'circle-xmark' : 'hourglass-half'}` }));
+      banner.appendChild(DOM.el('div', {}, [
+        DOM.el('h1', { text: isApproved ? 'VERIFIED GENUINE' : isRejected ? 'REJECTED' : 'PENDING' }),
+        DOM.el('p', { text: isApproved ? 'This clearance slip was officially signed by all required offices.' : isRejected ? 'This clearance was rejected by one or more offices.' : 'Approval is still in progress.' })
+      ]));
+      card.appendChild(banner);
+
+      // Logo + university
+      card.appendChild(DOM.el('div', { class: 'verify-brand' }, [
+        DOM.el('img', { src: 'images/minsu-logo.jpg', alt: 'MinSU' }),
+        DOM.el('div', {}, [
+          DOM.el('h2', { text: 'Mindoro State University' }),
+          DOM.el('p', { text: 'Clearance Verification' })
+        ])
+      ]));
+
+      // Student details
+      const details = DOM.el('div', { class: 'verify-details' });
+      const row = (l, v) => DOM.el('div', { class: 'verify-row' }, [
+        DOM.el('span', { class: 'verify-label', text: l }),
+        DOM.el('span', { class: 'verify-value', text: v || '—' })
+      ]);
+      details.appendChild(row('Student Name', data.student_name));
+      details.appendChild(row('Student No.', data.student_number));
+      details.appendChild(row('Course / Year / Section', `${data.course || ''} / ${data.year_level || ''} / ${data.section || ''}`));
+      details.appendChild(row('Campus / College', `${data.campus || '—'} / ${data.college || '—'}`));
+      details.appendChild(row('Clearance Type', data.clearance_type));
+      details.appendChild(row('Semester / AY', `${data.semester || ''} · ${data.academic_year || ''}`));
+      details.appendChild(row('Clearance ID', data.clearance_id));
+      card.appendChild(details);
+
+      // Approvals table
+      card.appendChild(DOM.el('h3', { class: 'mt-24 mb-8', text: 'Signed By' }));
+      const t = DOM.el('table', { class: 'verify-table' });
+      t.appendChild(DOM.el('thead', {}, DOM.el('tr', {}, ['Office', 'Status', 'Signed By', 'Date', 'Approval Code', 'Signature Hash'].map(h => DOM.el('th', { text: h })))));
+      const tb = DOM.el('tbody');
+      (data.approvals || []).forEach(a => {
+        const tr = DOM.el('tr');
+        tr.appendChild(DOM.el('td', { text: a.office }));
+        const statusTd = DOM.el('td');
+        statusTd.appendChild(DOM.el('span', { class: `badge ${a.status || 'pending'}`, text: (a.status || 'pending').toUpperCase() }));
+        tr.appendChild(statusTd);
+        tr.appendChild(DOM.el('td', { text: a.approved_by_name || '—' }));
+        tr.appendChild(DOM.el('td', { text: a.approved_at ? formatDate(a.approved_at) : '—' }));
+        tr.appendChild(DOM.el('td', { text: a.approval_code || '—', class: 'verify-code' }));
+        tr.appendChild(DOM.el('td', { text: a.signature_hash ? `${a.signature_hash.slice(0, 12)}…${a.signature_hash.slice(-8)}` : '—', class: 'verify-hash', title: a.signature_hash || '' }));
+        tb.appendChild(tr);
+      });
+      t.appendChild(tb);
+      card.appendChild(t);
+
+      // Footer
+      card.appendChild(DOM.el('div', { class: 'verify-footer' }, [
+        DOM.el('p', { text: 'Tamper-evident: any alteration to a signature invalidates its SHA-256 hash. Hashes above match what was recorded when the clearance was signed.' }),
+        DOM.el('a', { href: window.location.origin + window.location.pathname, class: 'btn btn-outline btn-sm mt-16' }, [DOM.el('i', { class: 'fa-solid fa-arrow-right' }), 'Go to MinSU Clearance']),
+      ]));
+    })
+    .catch(err => {
+      card.innerHTML = '';
+      const banner = DOM.el('div', { class: 'verify-banner bad' });
+      banner.appendChild(DOM.el('i', { class: 'fa-solid fa-triangle-exclamation' }));
+      banner.appendChild(DOM.el('div', {}, [
+        DOM.el('h1', { text: 'NOT VERIFIED' }),
+        DOM.el('p', { text: 'This clearance ID does not exist in our records. The slip may be forged, or the QR code is invalid.' })
+      ]));
+      card.appendChild(banner);
+      card.appendChild(DOM.el('p', { class: 'text-muted mt-16', text: `Scanned ID: ${state.verifyId}` }));
+      card.appendChild(DOM.el('a', { href: window.location.origin + window.location.pathname, class: 'btn btn-outline btn-sm mt-16' }, 'Go to MinSU Clearance'));
+    });
+  wrap.appendChild(card);
   return wrap;
 }
 
