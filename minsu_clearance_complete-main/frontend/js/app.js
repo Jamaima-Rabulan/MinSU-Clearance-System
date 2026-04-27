@@ -931,7 +931,7 @@ function renderClearanceDetail() {
     const apprTable = DOM.el('table', { class: 'slip-table' });
     apprTable.appendChild(DOM.el('thead', {}, DOM.el('tr', {}, [
       DOM.el('th', { text: 'CLEARING OFFICERS' }),
-      DOM.el('th', { text: 'SIGNATURE' }),
+      DOM.el('th', { text: 'STATUS' }),
       DOM.el('th', { text: 'DATE' }),
       DOM.el('th', { text: 'APPROVAL CODE' })
     ])));
@@ -939,19 +939,18 @@ function renderClearanceDetail() {
     (c.approvals || []).forEach(a => {
       const tr = DOM.el('tr');
       tr.appendChild(DOM.el('td', { text: a.office, class: 'slip-officer' }));
-      const sigCell = DOM.el('td', { class: 'slip-sig-cell' });
+      // Status cell: faculty name + ✓ Cleared / ✗ Rejected (signature is hidden — securely held in DB only)
+      const statusCell = DOM.el('td', { class: 'slip-status-cell' });
       if (a.status === 'approved') {
-        if (a.signature_type === 'drawn' && a.signature_image) {
-          sigCell.appendChild(DOM.el('img', { src: a.signature_image, alt: 'Signature', class: 'slip-sig-img' }));
-        } else if (a.signature_type === 'typed' && a.signature_name) {
-          sigCell.appendChild(DOM.el('div', { class: 'slip-sig-typed', text: a.signature_name }));
-        }
-        sigCell.appendChild(DOM.el('div', { class: 'slip-sig-name', text: a.approved_by_name || '' }));
-        if (a.comments) sigCell.appendChild(DOM.el('div', { class: 'slip-sig-remarks', text: a.comments }));
+        statusCell.appendChild(DOM.el('div', { class: 'slip-cleared', text: '✓ Cleared' }));
+        if (a.approved_by_name) statusCell.appendChild(DOM.el('div', { class: 'slip-sig-name', text: a.approved_by_name }));
       } else if (a.status === 'rejected') {
-        sigCell.appendChild(DOM.el('div', { class: 'slip-rejected', text: `REJECTED: ${a.comments || ''}` }));
+        statusCell.appendChild(DOM.el('div', { class: 'slip-rejected', text: `✗ Rejected: ${a.comments || ''}` }));
+        if (a.approved_by_name) statusCell.appendChild(DOM.el('div', { class: 'slip-sig-name', text: a.approved_by_name }));
+      } else {
+        statusCell.appendChild(DOM.el('div', { class: 'slip-pending', text: '— Pending —' }));
       }
-      tr.appendChild(sigCell);
+      tr.appendChild(statusCell);
       tr.appendChild(DOM.el('td', { text: a.approved_at ? formatDate(a.approved_at) : '' }));
       tr.appendChild(DOM.el('td', { text: a.approval_code || '', class: 'slip-code' }));
       apprBody.appendChild(tr);
