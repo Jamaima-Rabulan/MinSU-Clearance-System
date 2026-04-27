@@ -161,6 +161,9 @@ class ClearanceCreate(BaseModel):
 class ClearanceProcess(BaseModel):
     action: str
     comments: Optional[str] = None
+    signature_image: Optional[str] = None  # base64 data URL of drawn signature
+    signature_type: Optional[str] = None   # 'drawn' or 'typed'
+    signature_name: Optional[str] = None   # typed signature text
 
 class ForgotPassword(BaseModel):
     email: EmailStr
@@ -623,7 +626,9 @@ async def create_clearance(data: ClearanceCreate, request: Request, user: dict =
     approvals = [{
         "office": office, "status": "pending",
         "approved_by": None, "approved_by_name": None,
-        "approved_at": None, "comments": None, "approval_code": None
+        "approved_at": None, "comments": None, "approval_code": None,
+        "signature_image": None, "signature_name": None,
+        "signature_type": None, "signature_hash": None
     } for office in OFFICES]
 
     clearance_doc = {
@@ -723,6 +728,24 @@ async def process_clearance(clearance_id: str, data: ClearanceProcess, request: 
         if a["office"] == office:
             if a["status"] != "pending":
                 raise HTTPException(status_code=400, detail="Already processed by your office")
+            # E-signature required when approving
+            if data.action == "approve":
+                sig_type = (data.signature_type or "").lower()
+                if sig_type not in ("drawn", "typed"):
+                    raise HTTPException(status_code=400, detail="E-signature is required to approve. Please sign first.")
+                if sig_type == "drawn":
+                    if not data.signature_image or not data.signature_image.startswith("data:image"):
+                        raise HTTPException(status_code=400, detail="Invalid drawn signature. Please re-sign.")
+                    sig_payload = data.signature_image
+                else:
+                    if not data.signature_name or not data.signature_name.strip():
+                        raise HTTPException(status_code=400, detail="Typed signature name is required")
+                    sig_payload = data.signature_name.strip()
+                sig_hash = hashlib.sha256(sig_payload.encode("utf-8")).hexdigest()
+                a["signature_image"] = data.signature_image if sig_type == "drawn" else None
+                a["signature_name"] = data.signature_name.strip() if sig_type == "typed" else None
+                a["signature_type"] = sig_type
+                a["signature_hash"] = sig_hash
             a["status"] = "approved" if data.action == "approve" else "rejected"
             a["approved_by"] = user["id"]
             a["approved_by_name"] = user["full_name"]
@@ -791,6 +814,9 @@ class BulkProcess(BaseModel):
     clearance_ids: List[str]
     action: str  # approve or reject
     comments: Optional[str] = None
+    signature_image: Optional[str] = None
+    signature_type: Optional[str] = None
+    signature_name: Optional[str] = None
 
 @api_router.post("/clearances/bulk-process")
 async def bulk_process(data: BulkProcess, request: Request, user: dict = Depends(get_current_user)):
@@ -804,6 +830,26 @@ async def bulk_process(data: BulkProcess, request: Request, user: dict = Depends
         raise HTTPException(status_code=400, detail="Invalid action")
     if not data.clearance_ids:
         raise HTTPException(status_code=400, detail="No clearances selected")
+
+    # Validate signature once for bulk approval
+    bulk_sig_type = None
+    bulk_sig_image = None
+    bulk_sig_name = None
+    bulk_sig_hash = None
+    if data.action == "approve":
+        bulk_sig_type = (data.signature_type or "").lower()
+        if bulk_sig_type not in ("drawn", "typed"):
+            raise HTTPException(status_code=400, detail="E-signature is required for bulk approval")
+        if bulk_sig_type == "drawn":
+            if not data.signature_image or not data.signature_image.startswith("data:image"):
+                raise HTTPException(status_code=400, detail="Invalid drawn signature")
+            bulk_sig_image = data.signature_image
+            bulk_sig_hash = hashlib.sha256(bulk_sig_image.encode("utf-8")).hexdigest()
+        else:
+            if not data.signature_name or not data.signature_name.strip():
+                raise HTTPException(status_code=400, detail="Typed signature name is required")
+            bulk_sig_name = data.signature_name.strip()
+            bulk_sig_hash = hashlib.sha256(bulk_sig_name.encode("utf-8")).hexdigest()
 
     results = {"processed": [], "skipped": [], "fully_approved": []}
     for cid in data.clearance_ids:
@@ -831,6 +877,11 @@ async def bulk_process(data: BulkProcess, request: Request, user: dict = Depends
         target["approved_at"] = datetime.now(timezone.utc).isoformat()
         target["comments"] = data.comments
         target["approval_code"] = generate_approval_code()
+        if data.action == "approve":
+            target["signature_image"] = bulk_sig_image
+            target["signature_name"] = bulk_sig_name
+            target["signature_type"] = bulk_sig_type
+            target["signature_hash"] = bulk_sig_hash
 
         overall = "pending"
         if data.action == "reject":
@@ -943,6 +994,47 @@ async def download_attachment(clearance_id: str, attachment_id: str, user: dict 
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File missing on server")
     return FileResponse(file_path, filename=attachment["original_name"], media_type=attachment.get("content_type"))
+
+# ========== PUBLIC VERIFICATION (QR-scannable, no auth) ==========
+@api_router.get("/public/clearances/{clearance_id}/verify")
+async def public_verify_clearance(clearance_id: str):
+    """Public endpoint for QR-code verification of a clearance slip. No auth required."""
+    clearance = await db.clearances.find_one(
+        {"id": clearance_id},
+        {"_id": 0, "attachments": 0, "student_email": 0, "purpose": 0}
+    )
+    if not clearance:
+        raise HTTPException(status_code=404, detail="Clearance not found")
+    approvals_public = []
+    for a in clearance.get("approvals", []):
+        approvals_public.append({
+            "office": a.get("office"),
+            "status": a.get("status"),
+            "approval_code": a.get("approval_code"),
+            "approved_at": a.get("approved_at"),
+            "approved_by_name": a.get("approved_by_name"),
+            "signature_hash": a.get("signature_hash"),
+            "signature_type": a.get("signature_type"),
+        })
+    return {
+        "verified": True,
+        "clearance_id": clearance.get("id"),
+        "student_name": clearance.get("student_name"),
+        "student_number": clearance.get("student_number"),
+        "course": clearance.get("course"),
+        "year_level": clearance.get("year_level"),
+        "section": clearance.get("section"),
+        "campus": clearance.get("campus"),
+        "college": clearance.get("college"),
+        "semester": clearance.get("semester"),
+        "academic_year": clearance.get("academic_year"),
+        "clearance_type": clearance.get("clearance_type"),
+        "overall_status": clearance.get("overall_status"),
+        "created_at": clearance.get("created_at"),
+        "completed_at": clearance.get("completed_at"),
+        "approvals": approvals_public
+    }
+
 
 # ========== STATS ==========
 @api_router.get("/stats")
@@ -1203,12 +1295,12 @@ async def api_root():
 # ========== APP CONFIG ==========
 from fastapi.middleware.cors import CORSMiddleware
 app.include_router(api_router)
+# Use env-driven CORS origins (falls back to deployed frontend). Set CORS_ORIGINS="*" to allow all.
+_allow_any = bool(_cors_env) and _cors_env.strip() == '*'
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://minsu-clearance-system-1.onrender.com"
-    ],
-    allow_credentials=True,
+    allow_origins=["*"] if _allow_any else (CORS_ORIGINS + ["https://minsu-clearance-system-1.onrender.com"]),
+    allow_credentials=not _allow_any,
     allow_methods=["*"],
     allow_headers=["*"],
 )
