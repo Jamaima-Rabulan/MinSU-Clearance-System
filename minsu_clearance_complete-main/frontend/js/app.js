@@ -434,7 +434,11 @@ function renderApp() {
   layout.appendChild(sb);
 
   const main = DOM.el('main', { class: 'main-area' });
-  main.appendChild(DOM.el('button', { class: 'menu-toggle', onClick: () => document.getElementById('sidebar').classList.toggle('open') }, [DOM.el('i', { class: 'fa-solid fa-bars' })]));
+  // Top action bar (menu toggle on mobile + notification bell)
+  const topbar = DOM.el('div', { class: 'main-topbar' });
+  topbar.appendChild(DOM.el('button', { class: 'menu-toggle', onClick: () => document.getElementById('sidebar').classList.toggle('open') }, [DOM.el('i', { class: 'fa-solid fa-bars' })]));
+  topbar.appendChild(renderNotificationBell());
+  main.appendChild(topbar);
 
   if (state.selectedClearance) main.appendChild(renderClearanceDetail());
   else if (state.currentPage === 'dashboard') main.appendChild(renderDashboard());
@@ -457,6 +461,116 @@ async function handleLogout() {
   state.user = null; state.token = null; state.view = 'auth'; state.authMode = 'login';
   render();
   toast('Signed out', 'info');
+}
+
+// =========== NOTIFICATION BELL ===========
+function renderNotificationBell() {
+  const wrap = DOM.el('div', { class: 'notif-bell-wrap' });
+  const bellBtn = DOM.el('button', { class: 'notif-bell-btn', 'data-testid': 'notif-bell', title: 'Notifications', onClick: toggleDropdown }, [
+    DOM.el('i', { class: 'fa-solid fa-bell' })
+  ]);
+  const badge = DOM.el('span', { class: 'notif-badge', 'data-testid': 'notif-badge', style: { display: 'none' } });
+  bellBtn.appendChild(badge);
+  wrap.appendChild(bellBtn);
+
+  const dropdown = DOM.el('div', { class: 'notif-dropdown', style: { display: 'none' } });
+  wrap.appendChild(dropdown);
+
+  let isOpen = false;
+  async function toggleDropdown() {
+    isOpen = !isOpen;
+    dropdown.style.display = isOpen ? 'block' : 'none';
+    if (isOpen) await loadIntoDropdown();
+  }
+
+  async function loadIntoDropdown() {
+    dropdown.innerHTML = '<div class="notif-loading"><span class="spinner"></span></div>';
+    try {
+      const data = await api.call('/notifications?limit=20');
+      dropdown.innerHTML = '';
+      const header = DOM.el('div', { class: 'notif-header' });
+      header.appendChild(DOM.el('strong', { text: 'Notifications' }));
+      if (data.unread_count > 0) {
+        header.appendChild(DOM.el('button', { class: 'notif-mark-all', 'data-testid': 'notif-mark-all', onClick: async (e) => {
+          e.stopPropagation();
+          try { await api.call('/notifications/mark-all-read', { method: 'POST' }); refreshBadge(); loadIntoDropdown(); } catch (err) {}
+        }}, 'Mark all read'));
+      }
+      dropdown.appendChild(header);
+
+      if (!data.notifications.length) {
+        dropdown.appendChild(DOM.el('div', { class: 'notif-empty' }, [
+          DOM.el('i', { class: 'fa-solid fa-bell-slash' }),
+          DOM.el('p', { text: 'No notifications yet' })
+        ]));
+        return;
+      }
+      const list = DOM.el('div', { class: 'notif-list' });
+      data.notifications.forEach(n => {
+        const item = DOM.el('div', { class: `notif-item${n.read ? '' : ' unread'}`, onClick: async () => {
+          if (!n.read) { try { await api.call(`/notifications/${n.id}/read`, { method: 'POST' }); } catch (e) {} }
+          if (n.related_id) {
+            state.selectedClearance = n.related_id;
+            state.currentPage = 'clearances';
+            isOpen = false; dropdown.style.display = 'none';
+            render();
+          }
+        } });
+        const iconClass = {
+          clearance_created: 'plus-circle',
+          clearance_approved: 'circle-check',
+          clearance_rejected: 'circle-xmark',
+          clearance_ready_registrar: 'stamp'
+        }[n.type] || 'bell';
+        item.appendChild(DOM.el('div', { class: 'notif-icon' }, [DOM.el('i', { class: `fa-solid fa-${iconClass}` })]));
+        const content = DOM.el('div', { class: 'notif-content' });
+        content.appendChild(DOM.el('div', { class: 'notif-title', text: n.title }));
+        content.appendChild(DOM.el('div', { class: 'notif-body', text: n.body }));
+        content.appendChild(DOM.el('div', { class: 'notif-time', text: timeAgo(n.created_at) }));
+        item.appendChild(content);
+        list.appendChild(item);
+      });
+      dropdown.appendChild(list);
+    } catch (err) {
+      dropdown.innerHTML = `<div class="notif-empty">Error loading: ${err.message}</div>`;
+    }
+  }
+
+  async function refreshBadge() {
+    try {
+      const data = await api.call('/notifications?limit=1');
+      const count = data.unread_count || 0;
+      if (count > 0) {
+        badge.textContent = count > 99 ? '99+' : String(count);
+        badge.style.display = '';
+      } else {
+        badge.style.display = 'none';
+      }
+    } catch (e) {}
+  }
+
+  // Initial load + poll every 30s
+  refreshBadge();
+  if (window.__notifPoll) clearInterval(window.__notifPoll);
+  window.__notifPoll = setInterval(refreshBadge, 30000);
+
+  // Click outside to close
+  document.addEventListener('click', (e) => {
+    if (isOpen && !wrap.contains(e.target)) { isOpen = false; dropdown.style.display = 'none'; }
+  });
+
+  return wrap;
+}
+
+function timeAgo(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  return d.toLocaleDateString();
 }
 
 // =========== DASHBOARD ===========
@@ -543,7 +657,16 @@ function renderClearancesList() {
 
   const card = DOM.el('div', { class: 'card' });
   const filterRow = DOM.el('div', { class: 'filters' });
-  const statusSel = DOM.el('select', { 'data-testid': 'filter-status' }, [DOM.el('option', { value: '' }, 'All statuses'), ...['pending','approved','rejected'].map(s => DOM.el('option', { value: s }, s.charAt(0).toUpperCase() + s.slice(1)))]);
+  // For faculty/admin/superadmin, default the status filter to "pending" so approved clearances are hidden by default but accessible
+  const defaultStatus = state.user.role === 'student' ? '' : 'pending';
+  const statusSel = DOM.el('select', { 'data-testid': 'filter-status' }, [
+    DOM.el('option', { value: '' }, 'All statuses'),
+    ...['pending','approved','rejected'].map(s => {
+      const opt = DOM.el('option', { value: s }, s.charAt(0).toUpperCase() + s.slice(1));
+      if (s === defaultStatus) opt.selected = true;
+      return opt;
+    })
+  ]);
   filterRow.appendChild(statusSel);
 
   // Faculty/Admin: program/year/section filters for targeted bulk approval
