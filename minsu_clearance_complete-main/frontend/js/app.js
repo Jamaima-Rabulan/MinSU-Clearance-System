@@ -462,12 +462,18 @@ async function handleLogout() {
 // =========== DASHBOARD ===========
 function renderDashboard() {
   const wrap = DOM.el('div');
-  wrap.appendChild(DOM.el('div', { class: 'page-header' }, [
+  const header = DOM.el('div', { class: 'page-header' }, [
     DOM.el('div', {}, [
       DOM.el('h1', { text: `Welcome, ${state.user.full_name.split(' ')[0]}!` }),
       DOM.el('p', { class: 'subtitle', text: dashSubtitle() })
     ])
-  ]));
+  ]);
+  if (state.user.role === 'admin' || state.user.role === 'superadmin') {
+    header.appendChild(DOM.el('button', { class: 'btn btn-outline', 'data-testid': 'print-summary-btn', onClick: () => openSummaryReport() }, [
+      DOM.el('i', { class: 'fa-solid fa-file-lines' }), 'Print Summary'
+    ]));
+  }
+  wrap.appendChild(header);
 
   const grid = DOM.el('div', { class: 'stats-grid', 'data-testid': 'stats-grid' });
   ['total', 'pending', 'approved', 'rejected'].forEach(k => {
@@ -517,11 +523,22 @@ function dashSubtitle() {
 // =========== CLEARANCES LIST ===========
 function renderClearancesList() {
   const wrap = DOM.el('div');
+  const headerActions = DOM.el('div', { class: 'flex gap-8' });
+  if (state.user.role !== 'student') {
+    headerActions.appendChild(DOM.el('button', { class: 'btn btn-outline', 'data-testid': 'print-clearances-report-btn', onClick: () => {
+      const filters = {
+        status: statusSel.value, course: courseSel?.value || '',
+        year_level: yearSel?.value || '', section: sectionSel?.value || ''
+      };
+      openReportModal('clearances', filters);
+    }}, [DOM.el('i', { class: 'fa-solid fa-print' }), 'Print Report']));
+  }
   wrap.appendChild(DOM.el('div', { class: 'page-header' }, [
     DOM.el('div', {}, [
       DOM.el('h1', { text: 'Clearances' }),
       DOM.el('p', { class: 'subtitle', text: state.user.role === 'student' ? 'Your clearance requests' : state.user.role === 'faculty' ? 'Pending approvals for your office' : 'All clearances in the system' })
-    ])
+    ]),
+    headerActions
   ]));
 
   const card = DOM.el('div', { class: 'card' });
@@ -1258,7 +1275,10 @@ async function downloadAttachment(clearanceId, attachmentId) {
 function renderUsersPage() {
   const wrap = DOM.el('div');
   wrap.appendChild(DOM.el('div', { class: 'page-header' }, [
-    DOM.el('div', {}, [DOM.el('h1', { text: 'Users' }), DOM.el('p', { class: 'subtitle', text: 'Manage all user accounts.' })])
+    DOM.el('div', {}, [DOM.el('h1', { text: 'Users' }), DOM.el('p', { class: 'subtitle', text: 'Manage all user accounts.' })]),
+    DOM.el('button', { class: 'btn btn-outline', 'data-testid': 'print-users-report-btn', onClick: () => {
+      openReportModal('users', { search: search.value });
+    }}, [DOM.el('i', { class: 'fa-solid fa-print' }), 'Print Report'])
   ]));
   const card = DOM.el('div', { class: 'card' });
   const filters = DOM.el('div', { class: 'filters' });
@@ -1394,7 +1414,10 @@ function renderCreateUser() {
 function renderAuditLog() {
   const wrap = DOM.el('div');
   wrap.appendChild(DOM.el('div', { class: 'page-header' }, [
-    DOM.el('div', {}, [DOM.el('h1', { text: 'Audit Log' }), DOM.el('p', { class: 'subtitle', text: 'A complete record of every action in the system.' })])
+    DOM.el('div', {}, [DOM.el('h1', { text: 'Audit Log' }), DOM.el('p', { class: 'subtitle', text: 'A complete record of every action in the system.' })]),
+    DOM.el('button', { class: 'btn btn-outline', 'data-testid': 'print-audit-report-btn', onClick: () => {
+      openReportModal('audit', { action: actionInp.value, actor_email: emailInp.value });
+    }}, [DOM.el('i', { class: 'fa-solid fa-print' }), 'Print Report'])
   ]));
 
   const card = DOM.el('div', { class: 'card' });
@@ -1474,6 +1497,377 @@ function badgeForAction(action) {
   if (action.includes('SUCCESS') || action.includes('VERIFIED') || action.includes('APPROVED') || action.includes('CREATED')) return 'approved';
   if (action.includes('LOGIN') || action.includes('LOGOUT')) return 'info';
   return 'muted';
+}
+
+// =========== REPORT HELPERS (Print + CSV) ===========
+const REPORT_DEFS = {
+  clearances: {
+    title: 'Clearance Requests Report',
+    endpoint: '/clearances/list',
+    filterKeys: ['status', 'course', 'year_level', 'section'],
+    columns: [
+      { key: 'student_name', label: 'Student' },
+      { key: 'student_number', label: 'Student No.' },
+      { key: 'course', label: 'Course' },
+      { key: 'year_level', label: 'Year' },
+      { key: 'section', label: 'Section' },
+      { key: 'clearance_type', label: 'Type' },
+      { key: 'semester', label: 'Semester' },
+      { key: 'academic_year', label: 'AY' },
+      { key: 'overall_status', label: 'Status', map: (v) => (v || 'pending').toUpperCase() },
+      { key: 'created_at', label: 'Created', map: formatDate }
+    ],
+    extract: (data) => data.clearances || []
+  },
+  users: {
+    title: 'Users Directory Report',
+    endpoint: '/admin/users',
+    filterKeys: ['search'],
+    columns: [
+      { key: 'full_name', label: 'Name' },
+      { key: 'email', label: 'Email' },
+      { key: 'role', label: 'Role', map: (v) => (v || '').toUpperCase() },
+      { key: 'office', label: 'Office', map: (v) => v || '—' },
+      { key: 'course', label: 'Course', map: (v) => v || '—' },
+      { key: 'student_id', label: 'Student ID', map: (v) => v || '—' },
+      { key: 'email_verified', label: 'Verified', map: (v) => v ? 'Yes' : 'No' },
+      { key: 'created_at', label: 'Created', map: formatDate }
+    ],
+    extract: (data) => data.users || []
+  },
+  audit: {
+    title: 'Audit Log Report',
+    endpoint: '/admin/audit-logs',
+    filterKeys: ['action', 'actor_email'],
+    columns: [
+      { key: 'timestamp', label: 'When', map: formatDateTime },
+      { key: 'actor_email', label: 'User', map: (v) => v || '—' },
+      { key: 'actor_role', label: 'Role', map: (v) => (v || '—').toUpperCase() },
+      { key: 'action', label: 'Action' },
+      { key: 'target_type', label: 'Target', map: (v) => v || '—' },
+      { key: 'ip', label: 'IP', map: (v) => v || '—' }
+    ],
+    extract: (data) => data.logs || []
+  }
+};
+
+function openReportModal(reportType, currentFilters = {}) {
+  const def = REPORT_DEFS[reportType];
+  const body = DOM.el('div', { class: 'report-modal' });
+
+  body.appendChild(DOM.el('p', { class: 'text-muted mb-16', text: `Configure your ${def.title.toLowerCase()}. Optionally pick a date range, then preview, print, or export to CSV.` }));
+
+  // Date range
+  const dateRow = DOM.el('div', { class: 'form-row' });
+  dateRow.appendChild(DOM.el('div', { class: 'form-group' }, [
+    DOM.el('label', { text: 'From (optional)' }),
+    DOM.el('input', { type: 'date', name: 'date_from', 'data-testid': 'report-date-from' })
+  ]));
+  dateRow.appendChild(DOM.el('div', { class: 'form-group' }, [
+    DOM.el('label', { text: 'To (optional)' }),
+    DOM.el('input', { type: 'date', name: 'date_to', 'data-testid': 'report-date-to' })
+  ]));
+  body.appendChild(dateRow);
+
+  // Active filters preview
+  if (Object.keys(currentFilters).length) {
+    const tags = DOM.el('div', { class: 'filter-tags' });
+    tags.appendChild(DOM.el('strong', { text: 'Filters from current page: ' }));
+    Object.entries(currentFilters).forEach(([k, v]) => {
+      if (v) tags.appendChild(DOM.el('span', { class: 'filter-tag', text: `${k}: ${v}` }));
+    });
+    body.appendChild(tags);
+  }
+
+  // Action buttons
+  const actions = DOM.el('div', { class: 'flex gap-8 mt-24', style: { justifyContent: 'flex-end' } });
+  const cancelBtn = DOM.el('button', { type: 'button', class: 'btn btn-outline', onClick: () => modalCtx.close() }, 'Cancel');
+  const csvBtn = DOM.el('button', { type: 'button', class: 'btn btn-secondary', 'data-testid': 'report-csv-btn', onClick: () => doExport('csv') }, [DOM.el('i', { class: 'fa-solid fa-file-csv' }), 'Export CSV']);
+  const printBtn = DOM.el('button', { type: 'button', class: 'btn btn-primary', 'data-testid': 'report-print-btn', onClick: () => doExport('print') }, [DOM.el('i', { class: 'fa-solid fa-print' }), 'Print Report']);
+  actions.appendChild(cancelBtn);
+  actions.appendChild(csvBtn);
+  actions.appendChild(printBtn);
+  body.appendChild(actions);
+
+  async function doExport(mode) {
+    const dateFrom = body.querySelector('[name=date_from]').value;
+    const dateTo = body.querySelector('[name=date_to]').value;
+    [csvBtn, printBtn].forEach(b => b.disabled = true);
+    printBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px"></span> Loading...';
+    try {
+      const params = new URLSearchParams();
+      Object.entries(currentFilters).forEach(([k, v]) => { if (v) params.set(k, v); });
+      if (dateFrom) params.set('date_from', dateFrom);
+      if (dateTo) params.set('date_to', dateTo);
+      params.set('page_size', '1000');
+      params.set('page', '1');
+      const data = await api.call(`${def.endpoint}?${params}`);
+      const rows = def.extract(data);
+      const filterSummary = { ...currentFilters };
+      if (dateFrom) filterSummary.date_from = dateFrom;
+      if (dateTo) filterSummary.date_to = dateTo;
+      if (mode === 'csv') {
+        downloadCSV(def, rows, filterSummary);
+        toast(`Exported ${rows.length} row(s) to CSV`, 'success');
+      } else {
+        renderPrintReport(def, rows, filterSummary);
+      }
+      modalCtx.close();
+    } catch (err) {
+      toast(err.message, 'error');
+      [csvBtn, printBtn].forEach(b => b.disabled = false);
+      printBtn.innerHTML = '<i class="fa-solid fa-print"></i> Print Report';
+    }
+  }
+
+  const modalCtx = showModal(body, { title: `Generate ${def.title}`, size: '' });
+}
+
+function downloadCSV(def, rows, filters) {
+  const headers = def.columns.map(c => c.label);
+  const csvRows = [headers.join(',')];
+  rows.forEach(row => {
+    const cells = def.columns.map(c => {
+      const raw = row[c.key];
+      const v = c.map ? c.map(raw) : (raw == null ? '' : String(raw));
+      return `"${String(v).replace(/"/g, '""')}"`;
+    });
+    csvRows.push(cells.join(','));
+  });
+  const csv = csvRows.join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const filename = `${def.title.replace(/\s+/g, '_').toLowerCase()}_${new Date().toISOString().slice(0, 10)}.csv`;
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function renderPrintReport(def, rows, filters) {
+  // Build a fresh print container
+  const win = window.open('', '_blank', 'width=1024,height=900');
+  if (!win) { toast('Please allow pop-ups to print the report', 'warning'); return; }
+
+  const filterPairs = Object.entries(filters).filter(([_, v]) => v).map(([k, v]) =>
+    `<span class="report-filter-pill"><strong>${k.replace(/_/g, ' ')}:</strong> ${v}</span>`
+  ).join('');
+
+  const headerCells = def.columns.map(c => `<th>${c.label}</th>`).join('');
+  const bodyRows = rows.map(row => {
+    const cells = def.columns.map(c => {
+      const raw = row[c.key];
+      const v = c.map ? c.map(raw) : (raw == null ? '—' : raw);
+      return `<td>${escapeHtml(String(v))}</td>`;
+    }).join('');
+    return `<tr>${cells}</tr>`;
+  }).join('') || `<tr><td colspan="${def.columns.length}" style="text-align:center;padding:40px;color:#666">No records found.</td></tr>`;
+
+  const generatedAt = new Date().toLocaleString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const generatedBy = `${state.user.full_name} (${state.user.email})`;
+  const logoUrl = `${window.location.origin}/images/minsu-logo.jpg`;
+
+  win.document.write(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(def.title)}</title>
+<style>
+@page { size: A4 portrait; margin: 14mm 12mm; }
+* { box-sizing: border-box; }
+body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #111; margin: 0; padding: 24px; font-size: 11.5px; }
+.report-header { display: flex; align-items: center; gap: 16px; padding-bottom: 14px; border-bottom: 3px solid #1a5f3f; }
+.report-header img { width: 70px; height: 70px; border-radius: 50%; border: 2px solid #d4a017; }
+.report-header h1 { font-size: 18px; color: #0f3d24; margin: 0 0 4px; letter-spacing: 0.5px; }
+.report-header h2 { font-size: 12px; color: #5a6b5f; margin: 0 0 4px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; }
+.report-header h3 { font-size: 14px; color: #154d2e; margin: 6px 0 0; }
+.report-meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; padding: 8px 12px; background: #f3f9f5; border-radius: 6px; font-size: 10.5px; color: #2d3a32; }
+.report-meta strong { color: #0f3d24; }
+.filter-pills { margin: 8px 0 16px; display: flex; flex-wrap: wrap; gap: 6px; }
+.report-filter-pill { display: inline-block; padding: 3px 9px; background: #fff5cc; border: 1px solid #d4a017; border-radius: 999px; font-size: 10px; color: #5a3a00; }
+.report-filter-pill strong { color: #0f3d24; }
+table.report-table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+table.report-table th { background: #1a5f3f; color: white; padding: 7px 8px; text-align: left; font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase; font-size: 9.5px; border: 1px solid #154d2e; }
+table.report-table td { padding: 6px 8px; border: 1px solid #d8e0db; vertical-align: top; }
+table.report-table tr:nth-child(even) td { background: #f7faf8; }
+.report-summary { margin-top: 14px; padding: 10px 12px; background: #f3f9f5; border-radius: 6px; font-size: 11px; color: #0f3d24; }
+.signature-block { margin-top: 50px; display: flex; justify-content: space-between; gap: 40px; }
+.signature-line { flex: 1; border-top: 1.5px solid #111; padding-top: 4px; font-size: 10px; color: #444; text-align: center; }
+.signature-line strong { display: block; color: #111; margin-bottom: 16px; }
+.report-footer { margin-top: 22px; padding-top: 8px; border-top: 1px dashed #999; font-size: 9px; color: #777; text-align: center; }
+.print-action { padding: 24px; text-align: center; background: #f3f9f5; border-bottom: 1px solid #d8e0db; }
+.print-action button { padding: 10px 22px; margin: 0 6px; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; }
+.print-action .primary { background: #1a5f3f; color: white; }
+.print-action .secondary { background: #fff; color: #154d2e; border: 1px solid #1a5f3f; }
+@media print { .print-action { display: none !important; } body { padding: 0; } }
+</style></head>
+<body>
+<div class="print-action no-print">
+  <button class="primary" onclick="window.print()">🖨 Print Now</button>
+  <button class="secondary" onclick="window.close()">Close</button>
+</div>
+<div class="report-header">
+  <img src="${logoUrl}" alt="MinSU" onerror="this.style.display='none'" />
+  <div>
+    <h2>Mindoro State University</h2>
+    <h1>Office of Student Affairs Services</h1>
+    <h3>${escapeHtml(def.title)}</h3>
+  </div>
+</div>
+<div class="report-meta">
+  <div><strong>Generated by:</strong> ${escapeHtml(generatedBy)}</div>
+  <div><strong>Generated at:</strong> ${escapeHtml(generatedAt)}</div>
+  <div><strong>Total records:</strong> ${rows.length}</div>
+</div>
+${filterPairs ? `<div class="filter-pills">${filterPairs}</div>` : ''}
+<table class="report-table">
+  <thead><tr>${headerCells}</tr></thead>
+  <tbody>${bodyRows}</tbody>
+</table>
+<div class="signature-block">
+  <div class="signature-line"><strong>&nbsp;</strong>Prepared by</div>
+  <div class="signature-line"><strong>&nbsp;</strong>Verified by</div>
+  <div class="signature-line"><strong>&nbsp;</strong>Approved by</div>
+</div>
+<div class="report-footer">
+  MinSU Clearance System · ${escapeHtml(generatedAt)} · This is a system-generated report.
+</div>
+</body></html>`);
+  win.document.close();
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+}
+
+// =========== DASHBOARD SUMMARY REPORT ===========
+function openSummaryReport() {
+  const body = DOM.el('div', { class: 'report-modal' });
+  body.appendChild(DOM.el('p', { class: 'text-muted mb-16', text: 'Generate a printable executive summary of clearance activity over a date range.' }));
+
+  const dateRow = DOM.el('div', { class: 'form-row' });
+  dateRow.appendChild(DOM.el('div', { class: 'form-group' }, [
+    DOM.el('label', { text: 'From (optional)' }),
+    DOM.el('input', { type: 'date', name: 'date_from' })
+  ]));
+  dateRow.appendChild(DOM.el('div', { class: 'form-group' }, [
+    DOM.el('label', { text: 'To (optional)' }),
+    DOM.el('input', { type: 'date', name: 'date_to' })
+  ]));
+  body.appendChild(dateRow);
+
+  const actions = DOM.el('div', { class: 'flex gap-8 mt-24', style: { justifyContent: 'flex-end' } });
+  const cancelBtn = DOM.el('button', { type: 'button', class: 'btn btn-outline', onClick: () => modalCtx.close() }, 'Cancel');
+  const printBtn = DOM.el('button', { type: 'button', class: 'btn btn-primary', 'data-testid': 'summary-print-btn', onClick: async () => {
+    const dateFrom = body.querySelector('[name=date_from]').value;
+    const dateTo = body.querySelector('[name=date_to]').value;
+    printBtn.disabled = true; printBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px"></span> Loading...';
+    try {
+      const params = new URLSearchParams();
+      if (dateFrom) params.set('date_from', dateFrom);
+      if (dateTo) params.set('date_to', dateTo);
+      const data = await api.call(`/stats/range?${params}`);
+      renderSummaryPrint(data, dateFrom, dateTo);
+      modalCtx.close();
+    } catch (err) {
+      toast(err.message, 'error');
+      printBtn.disabled = false; printBtn.innerHTML = '<i class="fa-solid fa-print"></i> Print Summary';
+    }
+  }}, [DOM.el('i', { class: 'fa-solid fa-print' }), 'Print Summary']);
+  actions.appendChild(cancelBtn);
+  actions.appendChild(printBtn);
+  body.appendChild(actions);
+
+  const modalCtx = showModal(body, { title: 'Generate Dashboard Summary', size: '' });
+}
+
+function renderSummaryPrint(data, dateFrom, dateTo) {
+  const win = window.open('', '_blank', 'width=1024,height=900');
+  if (!win) { toast('Please allow pop-ups to print the report', 'warning'); return; }
+  const generatedAt = new Date().toLocaleString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const generatedBy = `${state.user.full_name} (${state.user.email})`;
+  const range = (dateFrom || dateTo) ? `${dateFrom || '—'} to ${dateTo || '—'}` : 'All time';
+  const logoUrl = `${window.location.origin}/images/minsu-logo.jpg`;
+  const courseRows = (data.by_course || []).map(c => `<tr><td>${escapeHtml(c.course)}</td><td style="text-align:right">${c.count}</td></tr>`).join('') || '<tr><td colspan="2" style="text-align:center;color:#666;padding:14px">No data</td></tr>';
+  const typeRows = (data.by_type || []).map(t => `<tr><td>${escapeHtml(t.type)}</td><td style="text-align:right">${t.count}</td></tr>`).join('') || '<tr><td colspan="2" style="text-align:center;color:#666;padding:14px">No data</td></tr>';
+  const total = data.total || 0;
+  const pct = (n) => total ? Math.round((n / total) * 100) : 0;
+
+  win.document.write(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Clearance Activity Summary</title>
+<style>
+@page { size: A4 portrait; margin: 14mm 12mm; }
+body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #111; padding: 24px; font-size: 12px; margin: 0; }
+.print-action { padding: 24px; text-align: center; background: #f3f9f5; border-bottom: 1px solid #d8e0db; margin: -24px -24px 24px; }
+.print-action button { padding: 10px 22px; margin: 0 6px; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 13px; }
+.print-action .primary { background: #1a5f3f; color: white; }
+.print-action .secondary { background: #fff; color: #154d2e; border: 1px solid #1a5f3f; }
+.report-header { display: flex; align-items: center; gap: 16px; padding-bottom: 14px; border-bottom: 3px solid #1a5f3f; }
+.report-header img { width: 70px; height: 70px; border-radius: 50%; border: 2px solid #d4a017; }
+.report-header h1 { font-size: 19px; color: #0f3d24; margin: 0 0 4px; }
+.report-header h2 { font-size: 12px; color: #5a6b5f; margin: 0; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; }
+.report-header h3 { font-size: 14px; color: #154d2e; margin: 6px 0 0; }
+.report-meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 12px 0 18px; padding: 10px 14px; background: #f3f9f5; border-radius: 6px; font-size: 11px; color: #2d3a32; }
+.report-meta strong { color: #0f3d24; }
+.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 18px 0 24px; }
+.kpi { padding: 14px; border-radius: 8px; text-align: center; border: 1.5px solid; }
+.kpi.total { border-color: #1a5f3f; background: #f3f9f5; }
+.kpi.pending { border-color: #d4a017; background: #fff5cc; }
+.kpi.approved { border-color: #2d8659; background: #e8f3ec; }
+.kpi.rejected { border-color: #b91c1c; background: #fef2f2; }
+.kpi .label { font-size: 10px; color: #5a6b5f; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; }
+.kpi .value { font-size: 28px; font-weight: 800; color: #0f3d24; margin: 4px 0; }
+.kpi .pct { font-size: 11px; color: #444; }
+.section-title { font-size: 13px; font-weight: 700; color: #0f3d24; text-transform: uppercase; letter-spacing: 0.5px; margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 1.5px solid #1a5f3f; }
+.tables-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+table { width: 100%; border-collapse: collapse; font-size: 11px; }
+th { background: #1a5f3f; color: white; padding: 7px 8px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; }
+td { padding: 6px 8px; border-bottom: 1px solid #d8e0db; }
+tr:nth-child(even) td { background: #f7faf8; }
+.signature-block { margin-top: 50px; display: flex; justify-content: space-between; gap: 40px; }
+.signature-line { flex: 1; border-top: 1.5px solid #111; padding-top: 4px; font-size: 10px; color: #444; text-align: center; }
+.signature-line strong { display: block; margin-bottom: 16px; }
+.report-footer { margin-top: 22px; padding-top: 8px; border-top: 1px dashed #999; font-size: 9px; color: #777; text-align: center; }
+@media print { .print-action { display: none !important; } body { padding: 0; } }
+</style></head><body>
+<div class="print-action">
+  <button class="primary" onclick="window.print()">🖨 Print Now</button>
+  <button class="secondary" onclick="window.close()">Close</button>
+</div>
+<div class="report-header">
+  <img src="${logoUrl}" alt="MinSU" onerror="this.style.display='none'" />
+  <div>
+    <h2>Mindoro State University</h2>
+    <h1>Office of Student Affairs Services</h1>
+    <h3>Clearance Activity — Executive Summary</h3>
+  </div>
+</div>
+<div class="report-meta">
+  <div><strong>Period:</strong> ${escapeHtml(range)}</div>
+  <div><strong>Generated by:</strong> ${escapeHtml(generatedBy)}</div>
+  <div><strong>Generated at:</strong> ${escapeHtml(generatedAt)}</div>
+</div>
+<div class="kpi-grid">
+  <div class="kpi total"><div class="label">Total</div><div class="value">${total}</div><div class="pct">100%</div></div>
+  <div class="kpi pending"><div class="label">Pending</div><div class="value">${data.pending || 0}</div><div class="pct">${pct(data.pending || 0)}%</div></div>
+  <div class="kpi approved"><div class="label">Approved</div><div class="value">${data.approved || 0}</div><div class="pct">${pct(data.approved || 0)}%</div></div>
+  <div class="kpi rejected"><div class="label">Rejected</div><div class="value">${data.rejected || 0}</div><div class="pct">${pct(data.rejected || 0)}%</div></div>
+</div>
+<div class="tables-grid">
+  <div>
+    <div class="section-title">Top Courses</div>
+    <table><thead><tr><th>Course</th><th style="text-align:right">Count</th></tr></thead><tbody>${courseRows}</tbody></table>
+  </div>
+  <div>
+    <div class="section-title">By Clearance Type</div>
+    <table><thead><tr><th>Type</th><th style="text-align:right">Count</th></tr></thead><tbody>${typeRows}</tbody></table>
+  </div>
+</div>
+<div class="signature-block">
+  <div class="signature-line"><strong>&nbsp;</strong>Prepared by</div>
+  <div class="signature-line"><strong>&nbsp;</strong>Verified by</div>
+  <div class="signature-line"><strong>&nbsp;</strong>Approved by</div>
+</div>
+<div class="report-footer">
+  MinSU Clearance System · ${escapeHtml(generatedAt)} · This is a system-generated report.
+</div>
+</body></html>`);
+  win.document.close();
 }
 
 // =========== MODAL HELPERS ===========
