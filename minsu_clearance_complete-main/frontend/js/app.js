@@ -410,6 +410,7 @@ function renderApp() {
   const nav = DOM.el('nav', { class: 'sidebar-nav' });
   const pages = [{ id: 'dashboard', label: 'Dashboard', icon: 'house' }, { id: 'clearances', label: 'Clearances', icon: 'file-circle-check' }];
   if (u.role === 'student') pages.push({ id: 'create', label: 'Request Clearance', icon: 'plus-circle' });
+  if (u.role === 'faculty') pages.push({ id: 'my-requirements', label: 'Office Requirements', icon: 'list-check' });
   if (u.role === 'admin' || u.role === 'superadmin') {
     pages.push({ id: 'users', label: 'Users', icon: 'users' });
     pages.push({ id: 'create-user', label: 'Add Faculty/Admin', icon: 'user-plus' });
@@ -444,6 +445,7 @@ function renderApp() {
   else if (state.currentPage === 'dashboard') main.appendChild(renderDashboard());
   else if (state.currentPage === 'clearances') main.appendChild(renderClearancesList());
   else if (state.currentPage === 'create') main.appendChild(renderCreateClearance());
+  else if (state.currentPage === 'my-requirements') main.appendChild(renderMyRequirementsPage());
   else if (state.currentPage === 'users') main.appendChild(renderUsersPage());
   else if (state.currentPage === 'create-user') main.appendChild(renderCreateUser());
   else if (state.currentPage === 'audit') main.appendChild(renderAuditLog());
@@ -959,6 +961,20 @@ function renderCreateClearance() {
     DOM.el('select', { name: 'clearance_type', required: true, 'data-testid': 'clearance-type-select' },
       state.constants.clearance_types.map(t => DOM.el('option', { value: t }, t)))
   ]));
+
+  // Live "Things you'll need" panel updates when clearance type changes
+  const reqPanel = DOM.el('div', { class: 'requirements-preview', id: 'create-req-preview' });
+  form.appendChild(reqPanel);
+  const typeSel = form.querySelector('[name=clearance_type]');
+  async function loadReqs() {
+    reqPanel.innerHTML = '<div class="text-muted" style="padding:8px;font-size:13px;"><span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle"></span> Loading office requirements...</div>';
+    try {
+      const data = await api.call(`/office-requirements?clearance_type=${encodeURIComponent(typeSel.value)}`);
+      renderRequirementsPreview(reqPanel, data.requirements || [], { interactive: false });
+    } catch (e) { reqPanel.innerHTML = ''; }
+  }
+  typeSel.addEventListener('change', loadReqs);
+  setTimeout(loadReqs, 0);
   form.appendChild(DOM.el('div', { class: 'form-row' }, [
     DOM.el('div', { class: 'form-group' }, [
       DOM.el('label', { text: 'Semester *' }),
@@ -986,6 +1002,208 @@ function renderCreateClearance() {
 }
 
 // =========== CLEARANCE DETAIL ===========
+// =========== OFFICE REQUIREMENTS HELPERS ===========
+function parseRequirementLines(notes) {
+  // Returns array of {text, isBullet, originalIndex}
+  if (!notes) return [];
+  const lines = notes.split('\n');
+  const result = [];
+  lines.forEach((raw, idx) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const bulletMatch = trimmed.match(/^[-*•]\s+(.*)$/);
+    if (bulletMatch) result.push({ text: bulletMatch[1], isBullet: true, originalIndex: idx });
+    else result.push({ text: trimmed, isBullet: false, originalIndex: idx });
+  });
+  return result;
+}
+
+function computeOfficeProgress(office, requirements, complianceState) {
+  // Returns {checked, total} for a given office
+  const req = requirements.find(r => r.office === office);
+  if (!req) return { checked: 0, total: 0 };
+  const items = parseRequirementLines(req.notes).filter(l => l.isBullet);
+  if (!items.length) return { checked: 0, total: 0 };
+  const officeState = (complianceState || {})[office] || {};
+  const checked = items.filter((_, idx) => officeState[String(idx)]).length;
+  return { checked, total: items.length };
+}
+
+function renderRequirementsPreview(container, requirements, opts = {}) {
+  // requirements: array from /office-requirements
+  // opts: { interactive: bool, clearanceId: str, complianceState: object, attachments: [], userIsStudent: bool }
+  container.innerHTML = '';
+  if (!requirements.length) {
+    container.appendChild(DOM.el('div', { class: 'requirements-empty' }, [
+      DOM.el('i', { class: 'fa-solid fa-circle-info' }),
+      DOM.el('span', { text: 'No office requirements have been posted yet for this clearance type.' })
+    ]));
+    return;
+  }
+  container.appendChild(DOM.el('h3', { class: 'requirements-title', text: 'Things you will need to comply with' }));
+  container.appendChild(DOM.el('p', { class: 'requirements-sub', text: 'Each office below has posted general requirements for this clearance type. Tick off items as you complete them.' }));
+
+  // Sort by OFFICES order
+  const officeOrder = state.constants.offices || [];
+  const sorted = [...requirements].sort((a, b) => officeOrder.indexOf(a.office) - officeOrder.indexOf(b.office));
+
+  sorted.forEach(req => {
+    const officeBlock = DOM.el('div', { class: 'office-req-block' });
+    const lines = parseRequirementLines(req.notes);
+    const bulletItems = lines.filter(l => l.isBullet);
+    const officeState = ((opts.complianceState || {})[req.office]) || {};
+
+    const head = DOM.el('div', { class: 'office-req-head' });
+    head.appendChild(DOM.el('div', { class: 'office-req-name' }, [
+      DOM.el('i', { class: 'fa-solid fa-building-columns' }),
+      DOM.el('span', { text: req.office })
+    ]));
+    if (bulletItems.length) {
+      const checkedCount = bulletItems.filter((_, i) => officeState[String(i)]).length;
+      head.appendChild(DOM.el('span', { class: 'office-req-progress', text: `${checkedCount}/${bulletItems.length} ready` }));
+    }
+    officeBlock.appendChild(head);
+
+    if (!lines.length) {
+      officeBlock.appendChild(DOM.el('p', { class: 'office-req-empty', text: 'No specific requirements posted.' }));
+    } else {
+      const ul = DOM.el('ul', { class: 'office-req-list' });
+      lines.forEach((line, idx) => {
+        if (line.isBullet) {
+          const li = DOM.el('li', { class: 'office-req-item' });
+          const isChecked = !!officeState[String(idx)];
+          if (opts.interactive && opts.userIsStudent) {
+            const cb = DOM.el('input', { type: 'checkbox', 'data-testid': `req-check-${req.office}-${idx}` });
+            cb.checked = isChecked;
+            cb.addEventListener('change', async () => {
+              try {
+                const r = await api.call(`/clearances/${opts.clearanceId}/compliance`, {
+                  method: 'PUT', body: JSON.stringify({ office: req.office, item_index: idx, checked: cb.checked })
+                });
+                // Update progress display in header
+                const newCount = parseRequirementLines(req.notes).filter(l => l.isBullet).filter((_, i) => (r.compliance[req.office] || {})[String(i)]).length;
+                const progEl = head.querySelector('.office-req-progress');
+                if (progEl) progEl.textContent = `${newCount}/${bulletItems.length} ready`;
+                opts.onComplianceChange && opts.onComplianceChange(r.compliance);
+              } catch (e) { toast(e.message, 'error'); cb.checked = !cb.checked; }
+            });
+            li.appendChild(cb);
+          } else {
+            li.appendChild(DOM.el('span', { class: `office-req-bullet ${isChecked ? 'done' : ''}`, html: isChecked ? '✓' : '•' }));
+          }
+          li.appendChild(DOM.el('span', { class: 'office-req-text', text: line.text }));
+          ul.appendChild(li);
+        } else {
+          ul.appendChild(DOM.el('li', { class: 'office-req-note', text: line.text }));
+        }
+      });
+      officeBlock.appendChild(ul);
+    }
+    container.appendChild(officeBlock);
+  });
+}
+
+// =========== FACULTY: My Office Requirements ===========
+function renderMyRequirementsPage() {
+  const wrap = DOM.el('div');
+  wrap.appendChild(DOM.el('div', { class: 'page-header' }, [
+    DOM.el('div', {}, [
+      DOM.el('h1', { text: 'Office Requirements' }),
+      DOM.el('p', { class: 'subtitle', text: `Post requirements for the ${state.user.office} so students know what to comply with.` })
+    ])
+  ]));
+
+  const card = DOM.el('div', { class: 'card' });
+
+  const tabRow = DOM.el('div', { class: 'req-type-tabs' });
+  const types = state.constants.clearance_types || [];
+  const editorWrap = DOM.el('div', { class: 'req-editor-wrap' });
+  card.appendChild(tabRow);
+  card.appendChild(editorWrap);
+  wrap.appendChild(card);
+
+  let activeType = types[0];
+  let allReqs = {};
+
+  async function loadAll() {
+    editorWrap.innerHTML = '<div class="text-center" style="padding:40px"><span class="spinner"></span></div>';
+    try {
+      const data = await api.call('/office-requirements/mine');
+      allReqs = data.by_type || {};
+      renderTabs();
+      renderEditor();
+    } catch (e) {
+      editorWrap.innerHTML = '';
+      editorWrap.appendChild(DOM.el('div', { class: 'alert error' }, e.message));
+    }
+  }
+
+  function renderTabs() {
+    tabRow.innerHTML = '';
+    types.forEach(t => {
+      const has = !!allReqs[t];
+      const tab = DOM.el('button', { class: `req-type-tab ${activeType === t ? 'active' : ''}`, 'data-testid': `req-tab-${t.replace(/\s+/g, '-')}`, onClick: () => { activeType = t; renderTabs(); renderEditor(); } }, [
+        DOM.el('span', { text: t }),
+        has ? DOM.el('span', { class: 'req-saved-dot' }) : null
+      ].filter(Boolean));
+      tabRow.appendChild(tab);
+    });
+  }
+
+  function renderEditor() {
+    editorWrap.innerHTML = '';
+    const existing = allReqs[activeType];
+    const help = DOM.el('div', { class: 'alert info req-editor-help' }, [
+      DOM.el('i', { class: 'fa-solid fa-lightbulb' }),
+      DOM.el('div', { html: 'Tip: Lines starting with <strong>"-"</strong> become tickable checklist items for the student. Other lines render as plain notes.' })
+    ]);
+    editorWrap.appendChild(help);
+    const textarea = DOM.el('textarea', {
+      class: 'req-editor-textarea',
+      'data-testid': 'req-editor-textarea',
+      rows: 10,
+      placeholder: '- Return all borrowed library books\n- Pay any unpaid fines\n\nNote: Visit our office Mon-Fri 9am-4pm.'
+    });
+    textarea.value = (existing && existing.notes) || '';
+    editorWrap.appendChild(textarea);
+
+    if (existing && existing.updated_at) {
+      editorWrap.appendChild(DOM.el('p', { class: 'req-meta', text: `Last updated ${formatDateTime(existing.updated_at)} by ${existing.updated_by_name || ''}` }));
+    }
+
+    // Live preview
+    const previewWrap = DOM.el('div', { class: 'req-preview-wrap' });
+    previewWrap.appendChild(DOM.el('h4', { text: 'Preview (what students see):' }));
+    const preview = DOM.el('div', { class: 'requirements-preview' });
+    const renderPrev = () => {
+      preview.innerHTML = '';
+      const fakeReq = [{ office: state.user.office, notes: textarea.value }];
+      renderRequirementsPreview(preview, fakeReq, { interactive: false });
+    };
+    textarea.addEventListener('input', renderPrev);
+    renderPrev();
+    previewWrap.appendChild(preview);
+    editorWrap.appendChild(previewWrap);
+
+    const saveBtn = DOM.el('button', { class: 'btn btn-primary mt-16', 'data-testid': 'req-save-btn', onClick: async () => {
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving...';
+      try {
+        await api.call('/office-requirements/mine', { method: 'PUT', body: JSON.stringify({ clearance_type: activeType, notes: textarea.value }) });
+        toast(`Requirements saved for ${activeType}`, 'success');
+        await loadAll();
+      } catch (e) {
+        toast(e.message, 'error');
+        saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fa-solid fa-save"></i> Save Requirements';
+      }
+    }}, [DOM.el('i', { class: 'fa-solid fa-save' }), 'Save Requirements']);
+    editorWrap.appendChild(saveBtn);
+  }
+
+  loadAll();
+  return wrap;
+}
+
+// =========== CLEARANCE DETAIL (with per-office sections) ===========
 function renderClearanceDetail() {
   const wrap = DOM.el('div', { id: 'clearance-detail' });
   wrap.appendChild(DOM.el('div', { class: 'page-header no-print' }, [
@@ -1181,6 +1399,113 @@ function renderClearanceDetail() {
         ]));
       });
     }
+
+    // ============ PER-OFFICE REQUIREMENTS & FILES ============
+    interactive.appendChild(DOM.el('div', { class: 'divider' }));
+    const reqSection = DOM.el('div', { class: 'office-sections', id: 'office-sections' });
+    interactive.appendChild(reqSection);
+    reqSection.innerHTML = '<div class="text-muted" style="padding:12px"><span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle"></span> Loading office requirements...</div>';
+
+    // Fetch office requirements for this clearance type and render per-office sections
+    api.call(`/office-requirements?clearance_type=${encodeURIComponent(c.clearance_type)}`).then(reqData => {
+      reqSection.innerHTML = '';
+      reqSection.appendChild(DOM.el('h3', { class: 'mb-8', text: 'Office Requirements & Files' }));
+      reqSection.appendChild(DOM.el('p', { class: 'text-muted mb-16', style: { fontSize: '13px' }, text: 'Each office below shows what you need to comply with. Tick off items as you finish, and upload files for the specific office that needs them.' }));
+
+      const officeList = state.constants.offices || [];
+      const reqMap = {};
+      (reqData.requirements || []).forEach(r => { reqMap[r.office] = r; });
+      const isOwnerStudent = state.user.role === 'student' && c.student_id === state.user.id;
+      const allowUpload = isOwnerStudent && c.overall_status !== 'approved';
+
+      officeList.forEach(office => {
+        const req = reqMap[office];
+        const officeAttachments = (c.attachments || []).filter(a => a.office === office);
+        const approvalEntry = (c.approvals || []).find(a => a.office === office) || {};
+        const block = DOM.el('div', { class: 'office-section' });
+
+        // Header
+        const head = DOM.el('div', { class: 'office-section-head' });
+        head.appendChild(DOM.el('div', { class: 'office-section-title' }, [
+          DOM.el('i', { class: 'fa-solid fa-building-columns' }),
+          DOM.el('span', { text: office }),
+          DOM.el('span', { class: `badge ${approvalEntry.status || 'pending'}`, text: (approvalEntry.status || 'pending').toUpperCase() })
+        ]));
+        const lines = parseRequirementLines(req && req.notes);
+        const bulletItems = lines.filter(l => l.isBullet);
+        if (bulletItems.length) {
+          const officeState = ((c.compliance || {})[office]) || {};
+          const checkedCount = bulletItems.filter((_, i) => officeState[String(i)]).length;
+          head.appendChild(DOM.el('span', { class: 'office-req-progress' }, `${checkedCount}/${bulletItems.length} ready`));
+        }
+        block.appendChild(head);
+
+        // Requirements list
+        const reqBox = DOM.el('div', { class: 'office-section-req' });
+        if (!req || !lines.length) {
+          reqBox.appendChild(DOM.el('p', { class: 'text-muted', style: { fontSize: '12px', margin: 0 }, text: 'No requirements posted by this office for this clearance type.' }));
+        } else {
+          renderRequirementsPreview(reqBox, [req], {
+            interactive: allowUpload, clearanceId: c.id,
+            complianceState: c.compliance || {}, userIsStudent: isOwnerStudent,
+            onComplianceChange: (newState) => { c.compliance = newState; }
+          });
+          // Strip the title that renderRequirementsPreview added (we have our own)
+          const t = reqBox.querySelector('.requirements-title'); if (t) t.remove();
+          const s = reqBox.querySelector('.requirements-sub'); if (s) s.remove();
+          // Strip the inner office head (we already render it above)
+          const innerHead = reqBox.querySelector('.office-req-head'); if (innerHead) innerHead.remove();
+        }
+        block.appendChild(reqBox);
+
+        // Office-specific attachments
+        if (officeAttachments.length) {
+          const attBox = DOM.el('div', { class: 'office-section-attachments' });
+          attBox.appendChild(DOM.el('h4', { class: 'office-att-title', text: `Files for ${office}` }));
+          officeAttachments.forEach(a => {
+            attBox.appendChild(DOM.el('div', { class: 'attachment-item' }, [
+              DOM.el('div', { class: 'file-icon' }, [DOM.el('i', { class: 'fa-solid fa-file' })]),
+              DOM.el('div', { class: 'file-info' }, [
+                DOM.el('div', { class: 'name', text: a.original_name }),
+                DOM.el('div', { class: 'meta', text: `${(a.size / 1024).toFixed(1)} KB · uploaded by ${a.uploaded_by_name} · ${formatDateTime(a.uploaded_at)}${a.description ? ' · ' + a.description : ''}` })
+              ]),
+              DOM.el('button', { class: 'btn btn-sm btn-outline', onClick: () => downloadAttachment(c.id, a.id) }, [DOM.el('i', { class: 'fa-solid fa-download' }), 'Download'])
+            ]));
+          });
+          block.appendChild(attBox);
+        }
+
+        // Upload zone for student (per-office)
+        if (allowUpload && approvalEntry.status === 'pending') {
+          const uploadBox = DOM.el('div', { class: 'office-section-upload' });
+          const uForm = DOM.el('form', { 'data-testid': `upload-form-${office.replace(/[^a-z0-9]/gi, '-')}`, onSubmit: async (e) => {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            if (!fd.get('file') || fd.get('file').size === 0) { toast('Please choose a file', 'error'); return; }
+            fd.set('office', office);
+            const btn = e.target.querySelector('button[type=submit]');
+            btn.disabled = true; btn.innerHTML = '<span class="spinner" style="width:14px;height:14px"></span> Uploading...';
+            try {
+              await api.call(`/clearances/${c.id}/upload`, { method: 'POST', body: fd });
+              toast(`File uploaded for ${office}`, 'success'); render();
+            } catch (err) {
+              toast(err.message, 'error');
+              btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-upload"></i> Upload';
+            }
+          }});
+          uForm.appendChild(DOM.el('div', { class: 'form-row office-upload-row' }, [
+            DOM.el('input', { type: 'file', name: 'file', required: true, 'data-testid': `upload-file-input-${office.replace(/[^a-z0-9]/gi, '-')}`, accept: '.pdf,.png,.jpg,.jpeg,.doc,.docx,.xlsx,.txt', class: 'office-upload-file' }),
+            DOM.el('input', { name: 'description', placeholder: 'Description (optional)', class: 'office-upload-desc', 'data-testid': `upload-desc-${office.replace(/[^a-z0-9]/gi, '-')}` }),
+            DOM.el('button', { type: 'submit', class: 'btn btn-sm btn-primary', 'data-testid': `upload-submit-${office.replace(/[^a-z0-9]/gi, '-')}` }, [DOM.el('i', { class: 'fa-solid fa-upload' }), 'Upload'])
+          ]));
+          block.appendChild(uForm);
+        }
+
+        reqSection.appendChild(block);
+      });
+    }).catch(err => {
+      reqSection.innerHTML = `<div class="alert error">${err.message}</div>`;
+    });
 
     // Attachments
     interactive.appendChild(DOM.el('div', { class: 'divider' }));
