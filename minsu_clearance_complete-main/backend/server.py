@@ -95,6 +95,7 @@ OFFICES = [
     'University Librarian',
     'Guidance Counselor',
     'SAS Director/Coordinator',
+    'University Student Government',
     'Student Affairs/Finance',
     'College Dean/Program Chair',
     'Registrar'
@@ -432,6 +433,38 @@ async def startup():
         await db.login_attempts.create_index("identifier", unique=True)
         print("✅ login_attempts index created")
 
+        await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
+        await db.notifications.create_index([("user_id", 1), ("read", 1)])
+        print("✅ notifications index created")
+
+        # Migration: add USG approval entry to existing clearances that don't have it
+        migrated = 0
+        async for c in db.clearances.find({"approvals.office": {"$ne": "University Student Government"}}):
+            new_entry = {
+                "office": "University Student Government",
+                "status": "pending",
+                "approved_by": None, "approved_by_name": None,
+                "approved_at": None, "comments": None, "approval_code": None,
+                "signature_image": None, "signature_name": None,
+                "signature_type": None, "signature_hash": None
+            }
+            # Insert after SAS Director/Coordinator to preserve order
+            approvals = c.get("approvals", [])
+            insert_at = len(approvals)
+            for i, a in enumerate(approvals):
+                if a.get("office") == "SAS Director/Coordinator":
+                    insert_at = i + 1
+                    break
+            approvals.insert(insert_at, new_entry)
+            # If clearance was previously "approved" overall, it's no longer fully approved — reset to pending
+            new_overall = c.get("overall_status")
+            if new_overall == "approved":
+                new_overall = "pending"
+            await db.clearances.update_one({"id": c["id"]}, {"$set": {"approvals": approvals, "overall_status": new_overall}})
+            migrated += 1
+        if migrated:
+            print(f"✅ Migrated {migrated} clearance(s) to include USG approval")
+
         # Seed Superadmin
         sa_email = os.environ.get('SUPERADMIN_EMAIL', 'superadmin@minsu.edu.ph')
         sa_password = os.environ.get('SUPERADMIN_PASSWORD', 'Sup3rAdmin#2026')
@@ -686,6 +719,30 @@ async def reset_password(data: ResetPassword, request: Request):
     await log_audit(user["id"], email, user.get("role"), "PASSWORD_RESET_SUCCESS", "user", user["id"], None, get_client_ip(request))
     return {"success": True, "message": "Password reset successfully"}
 
+# ========== NOTIFICATIONS ==========
+async def create_notification(user_id: str, type_: str, title: str, body: str, related_id: Optional[str] = None):
+    """Create a single in-app notification."""
+    await db.notifications.insert_one({
+        "id": generate_uuid(),
+        "user_id": user_id,
+        "type": type_,
+        "title": title,
+        "body": body,
+        "related_id": related_id,
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+
+async def notify_office(office: str, type_: str, title: str, body: str, related_id: Optional[str] = None):
+    """Notify all faculty assigned to an office."""
+    async for u in db.users.find({"role": "faculty", "office": office}, {"id": 1}):
+        await create_notification(u["id"], type_, title, body, related_id)
+
+async def notify_admins(type_: str, title: str, body: str, related_id: Optional[str] = None):
+    """Notify all admins + superadmins."""
+    async for u in db.users.find({"role": {"$in": ["admin", "superadmin"]}}, {"id": 1}):
+        await create_notification(u["id"], type_, title, body, related_id)
+
 # ========== CLEARANCE ROUTES ==========
 @api_router.post("/clearances/create")
 async def create_clearance(data: ClearanceCreate, request: Request, user: dict = Depends(get_current_user)):
@@ -728,6 +785,15 @@ async def create_clearance(data: ClearanceCreate, request: Request, user: dict =
     await db.clearances.insert_one(clearance_doc)
     await log_audit(user["id"], user["email"], user["role"], "CLEARANCE_CREATED", "clearance", clearance_id,
                     {"type": data.clearance_type, "semester": data.semester}, get_client_ip(request))
+
+    # In-app notifications: notify all faculty (first office in chain prioritized) + admins
+    notif_title = "New clearance request"
+    notif_body = f"{user['full_name']} ({user.get('student_id', '')}) submitted a {data.clearance_type} clearance — {data.semester}, {data.academic_year}"
+    # Notify all faculty in every office (they may want a heads up) + admins
+    for office in OFFICES:
+        await notify_office(office, "clearance_created", notif_title, notif_body, clearance_id)
+    await notify_admins("clearance_created", notif_title, notif_body, clearance_id)
+
     return {"success": True, "clearance_id": clearance_id}
 
 @api_router.get("/clearances/list")
@@ -746,7 +812,17 @@ async def list_clearances(
     if user["role"] == "student":
         query["student_id"] = user["id"]
     elif user["role"] == "faculty":
-        query["approvals"] = {"$elemMatch": {"office": user.get("office"), "status": "pending"}}
+        office = user.get("office")
+        if office == "Registrar":
+            # Registrar only sees clearances where ALL non-Registrar offices have already approved
+            non_reg = [o for o in OFFICES if o != "Registrar"]
+            query["$and"] = [
+                {"approvals": {"$elemMatch": {"office": o, "status": "approved"}}}
+                for o in non_reg
+            ]
+        else:
+            # Other faculty see ALL clearances for their office (pending + approved + rejected)
+            query["approvals"] = {"$elemMatch": {"office": office}}
 
     if course: query["course"] = course
     if year_level: query["year_level"] = year_level
@@ -850,6 +926,25 @@ async def process_clearance(clearance_id: str, data: ClearanceProcess, request: 
     )
     await log_audit(user["id"], user["email"], user["role"], f"CLEARANCE_{data.action.upper()}D",
                     "clearance", clearance_id, {"office": office, "comments": data.comments}, get_client_ip(request))
+
+    # In-app notification to the student about this signing
+    student_id_nid = clearance.get("student_id")
+    if student_id_nid:
+        action_label = "approved" if data.action == "approve" else "rejected"
+        await create_notification(
+            student_id_nid, f"clearance_{action_label}",
+            f"Your clearance was {action_label} by {office}",
+            f"Your {clearance.get('clearance_type', 'Clearance')} clearance was {action_label} by the {office}.",
+            clearance_id
+        )
+    # If fully approved, also notify Registrar(s) that this clearance is now ready for their signing
+    if data.action == "approve" and office != "Registrar":
+        all_others_done = all(a.get("status") == "approved" for a in approvals if a.get("office") != "Registrar")
+        if all_others_done:
+            await notify_office("Registrar", "clearance_ready_registrar",
+                                "Clearance ready for Registrar",
+                                f"{clearance.get('student_name', '')}'s clearance has been signed by all other offices and is now ready for Registrar approval.",
+                                clearance_id)
 
     # Notify student when fully approved
     if overall == "approved":
@@ -1114,6 +1209,32 @@ async def public_verify_clearance(clearance_id: str):
         "approvals": approvals_public
     }
 
+
+# ========== NOTIFICATIONS (in-app) ==========
+@api_router.get("/notifications")
+async def list_notifications(limit: int = 50, user: dict = Depends(get_current_user)):
+    limit = max(1, min(200, limit))
+    items = await db.notifications.find(
+        {"user_id": user["id"]}, {"_id": 0}
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    unread = await db.notifications.count_documents({"user_id": user["id"], "read": False})
+    return {"notifications": items, "unread_count": unread}
+
+@api_router.post("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str, user: dict = Depends(get_current_user)):
+    res = await db.notifications.update_one(
+        {"id": notification_id, "user_id": user["id"]},
+        {"$set": {"read": True}}
+    )
+    return {"success": res.modified_count > 0}
+
+@api_router.post("/notifications/mark-all-read")
+async def mark_all_notifications_read(user: dict = Depends(get_current_user)):
+    res = await db.notifications.update_many(
+        {"user_id": user["id"], "read": False},
+        {"$set": {"read": True}}
+    )
+    return {"success": True, "updated": res.modified_count}
 
 # ========== STATS ==========
 @api_router.get("/stats")
