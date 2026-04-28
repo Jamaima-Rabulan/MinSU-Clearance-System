@@ -736,6 +736,8 @@ async def list_clearances(
     course: Optional[str] = None,
     year_level: Optional[str] = None,
     section: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
     user: dict = Depends(get_current_user)
@@ -750,9 +752,14 @@ async def list_clearances(
     if year_level: query["year_level"] = year_level
     if section: query["section"] = section
     if status: query["overall_status"] = status
+    if date_from or date_to:
+        date_q = {}
+        if date_from: date_q["$gte"] = date_from
+        if date_to: date_q["$lte"] = date_to + "T23:59:59"
+        query["created_at"] = date_q
 
     page = max(1, page)
-    page_size = max(1, min(100, page_size))
+    page_size = max(1, min(1000, page_size))
     skip = (page - 1) * page_size
     total = await db.clearances.count_documents(query)
     clearances = await db.clearances.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(page_size).to_list(page_size)
@@ -1123,9 +1130,50 @@ async def stats(user: dict = Depends(get_current_user)):
     rejected = await db.clearances.count_documents({**match, "overall_status": "rejected"})
     return {"total": total, "pending": pending, "approved": approved, "rejected": rejected}
 
+@api_router.get("/stats/range")
+async def stats_range(
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """Date-range stats for printable summary reports."""
+    match = {}
+    if user["role"] == "student":
+        match["student_id"] = user["id"]
+    elif user["role"] == "faculty":
+        match["approvals"] = {"$elemMatch": {"office": user.get("office")}}
+    if date_from or date_to:
+        date_q = {}
+        if date_from: date_q["$gte"] = date_from
+        if date_to: date_q["$lte"] = date_to + "T23:59:59"
+        match["created_at"] = date_q
+
+    total = await db.clearances.count_documents(match)
+    pending = await db.clearances.count_documents({**match, "overall_status": "pending"})
+    approved = await db.clearances.count_documents({**match, "overall_status": "approved"})
+    rejected = await db.clearances.count_documents({**match, "overall_status": "rejected"})
+    # Top breakdowns
+    by_course = await db.clearances.aggregate([
+        {"$match": match},
+        {"$group": {"_id": "$course", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 10}
+    ]).to_list(10)
+    by_type = await db.clearances.aggregate([
+        {"$match": match},
+        {"$group": {"_id": "$clearance_type", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}
+    ]).to_list(20)
+    return {
+        "total": total, "pending": pending, "approved": approved, "rejected": rejected,
+        "by_course": [{"course": x["_id"] or "—", "count": x["count"]} for x in by_course],
+        "by_type": [{"type": x["_id"] or "—", "count": x["count"]} for x in by_type],
+        "date_from": date_from, "date_to": date_to
+    }
+
 # ========== ADMIN ==========
 @api_router.get("/admin/users")
 async def admin_users(page: int = 1, page_size: int = 50, search: Optional[str] = None,
+                      date_from: Optional[str] = None, date_to: Optional[str] = None,
                       user: dict = Depends(require_admin)):
     query = {}
     if search:
@@ -1134,12 +1182,17 @@ async def admin_users(page: int = 1, page_size: int = 50, search: Optional[str] 
             {"email": {"$regex": search, "$options": "i"}},
             {"student_id": {"$regex": search, "$options": "i"}}
         ]
+    if date_from or date_to:
+        date_q = {}
+        if date_from: date_q["$gte"] = date_from
+        if date_to: date_q["$lte"] = date_to + "T23:59:59"
+        query["created_at"] = date_q
     page = max(1, page)
-    page_size = max(1, min(100, page_size))
+    page_size = max(1, min(1000, page_size))
     skip = (page - 1) * page_size
     total = await db.users.count_documents(query)
     users = await db.users.find(query, {"_id": 0, "password_hash": 0, "verification_code": 0,
-                                         "reset_code": 0, "reset_code_expiry": 0}).skip(skip).limit(page_size).to_list(page_size)
+                                         "reset_code": 0, "reset_code_expiry": 0}).sort("created_at", -1).skip(skip).limit(page_size).to_list(page_size)
     return {"users": users, "pagination": {"page": page, "page_size": page_size, "total_count": total,
                                             "total_pages": (total + page_size - 1) // page_size}}
 
@@ -1203,14 +1256,20 @@ async def admin_create_user(data: UserCreate, request: Request, user: dict = Dep
 async def admin_audit_logs(
     page: int = 1, page_size: int = 50,
     action: Optional[str] = None, actor_email: Optional[str] = None,
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
     cursor: Optional[str] = None,
     user: dict = Depends(require_admin)
 ):
     query = {}
     if action: query["action"] = {"$regex": action, "$options": "i"}
     if actor_email: query["actor_email"] = {"$regex": actor_email, "$options": "i"}
+    if date_from or date_to:
+        date_q = {}
+        if date_from: date_q["$gte"] = date_from
+        if date_to: date_q["$lte"] = date_to + "T23:59:59"
+        query["timestamp"] = date_q
 
-    page_size = max(1, min(200, page_size))
+    page_size = max(1, min(1000, page_size))
 
     # Cursor mode (preferred for large datasets) — cursor is the timestamp of the last seen entry
     if cursor:
