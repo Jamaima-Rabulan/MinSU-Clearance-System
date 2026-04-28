@@ -437,6 +437,9 @@ async def startup():
         await db.notifications.create_index([("user_id", 1), ("read", 1)])
         print("✅ notifications index created")
 
+        await db.office_requirements.create_index([("office", 1), ("clearance_type", 1)], unique=True)
+        print("✅ office_requirements index created")
+
         # Migration: add USG approval entry to existing clearances that don't have it
         migrated = 0
         async for c in db.clearances.find({"approvals.office": {"$ne": "University Student Government"}}):
@@ -1102,6 +1105,81 @@ async def bulk_process(data: BulkProcess, request: Request, user: dict = Depends
             "summary": {"total": len(data.clearance_ids), "processed": len(results["processed"]),
                         "skipped": len(results["skipped"]), "fully_approved": len(results["fully_approved"])}}
 
+# ========== OFFICE REQUIREMENTS ==========
+class OfficeRequirementsUpsert(BaseModel):
+    clearance_type: str
+    notes: Optional[str] = ""
+
+@api_router.get("/office-requirements")
+async def list_office_requirements(clearance_type: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Returns all offices' requirements for a given clearance type. Used by students + faculty."""
+    query = {}
+    if clearance_type:
+        query["clearance_type"] = clearance_type
+    items = await db.office_requirements.find(query, {"_id": 0}).to_list(200)
+    return {"requirements": items}
+
+@api_router.get("/office-requirements/mine")
+async def my_office_requirements(user: dict = Depends(get_current_user)):
+    """Returns the current faculty's office requirements across all clearance types."""
+    if user["role"] != "faculty" or not user.get("office"):
+        raise HTTPException(status_code=403, detail="Only faculty can manage office requirements")
+    items = await db.office_requirements.find({"office": user["office"]}, {"_id": 0}).to_list(200)
+    # Return as map keyed by clearance_type for easy frontend access
+    by_type = {item["clearance_type"]: item for item in items}
+    return {"office": user["office"], "by_type": by_type}
+
+@api_router.put("/office-requirements/mine")
+async def update_my_office_requirements(data: OfficeRequirementsUpsert, request: Request, user: dict = Depends(get_current_user)):
+    """Faculty upserts requirements for their office for a specific clearance type."""
+    if user["role"] != "faculty" or not user.get("office"):
+        raise HTTPException(status_code=403, detail="Only faculty can manage office requirements")
+    if data.clearance_type not in CLEARANCE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid clearance type. Must be one of: {CLEARANCE_TYPES}")
+    now = datetime.now(timezone.utc).isoformat()
+    update = {
+        "office": user["office"],
+        "clearance_type": data.clearance_type,
+        "notes": (data.notes or "").strip(),
+        "updated_by": user["id"],
+        "updated_by_name": user["full_name"],
+        "updated_at": now
+    }
+    existing = await db.office_requirements.find_one({"office": user["office"], "clearance_type": data.clearance_type})
+    if not existing:
+        update["id"] = generate_uuid()
+        update["created_at"] = now
+    await db.office_requirements.update_one(
+        {"office": user["office"], "clearance_type": data.clearance_type},
+        {"$set": update},
+        upsert=True
+    )
+    await log_audit(user["id"], user["email"], user["role"], "OFFICE_REQUIREMENTS_UPDATED",
+                    "office_requirements", data.clearance_type,
+                    {"office": user["office"], "clearance_type": data.clearance_type}, get_client_ip(request))
+    return {"success": True}
+
+# ========== STUDENT COMPLIANCE TRACKING (per-clearance checklist state) ==========
+@api_router.put("/clearances/{clearance_id}/compliance")
+async def update_compliance(clearance_id: str, payload: dict, user: dict = Depends(get_current_user)):
+    """Student ticks off requirement checklist items. Payload: {office: 'X', item_index: N, checked: bool}"""
+    clearance = await db.clearances.find_one({"id": clearance_id})
+    if not clearance:
+        raise HTTPException(status_code=404, detail="Clearance not found")
+    if user["role"] != "student" or clearance["student_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Only the owning student can update compliance")
+    office = payload.get("office")
+    item_index = payload.get("item_index")
+    checked = bool(payload.get("checked"))
+    if not office or item_index is None:
+        raise HTTPException(status_code=400, detail="office and item_index required")
+    compliance = clearance.get("compliance", {}) or {}
+    office_state = compliance.get(office, {}) or {}
+    office_state[str(item_index)] = checked
+    compliance[office] = office_state
+    await db.clearances.update_one({"id": clearance_id}, {"$set": {"compliance": compliance, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"success": True, "compliance": compliance}
+
 # ========== FILE UPLOADS ==========
 @api_router.post("/clearances/{clearance_id}/upload")
 async def upload_attachment(
@@ -1127,6 +1205,9 @@ async def upload_attachment(
     ext = Path(file.filename).suffix.lower()
     if ext not in allowed_ext:
         raise HTTPException(status_code=400, detail=f"File type not allowed. Allowed: {sorted(allowed_ext)}")
+
+    if office and office not in OFFICES:
+        raise HTTPException(status_code=400, detail=f"Invalid office. Must be one of: {OFFICES}")
 
     file_id = generate_uuid()
     safe_name = f"{file_id}{ext}"
