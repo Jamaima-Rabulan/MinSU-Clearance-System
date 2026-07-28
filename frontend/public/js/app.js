@@ -17,6 +17,73 @@ let constants = {
     colleges: [],
 };
 
+// ============= VALIDATION =============
+const Validate = {
+    email(v) {
+        if (!v) return "Email is required";
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return "Enter a valid email address";
+        return null;
+    },
+    password(v, { strict = false } = {}) {
+        if (!v) return "Password is required";
+        if (!strict) return null;
+        if (v.length < 8) return "Password must be at least 8 characters";
+        if (!/[A-Za-z]/.test(v)) return "Password must contain at least one letter";
+        if (!/\d/.test(v)) return "Password must contain at least one number";
+        return null;
+    },
+    fullName(v) {
+        v = (v || "").trim();
+        if (v.length < 3) return "Full name must be at least 3 characters";
+        if (v.length > 120) return "Full name is too long";
+        if (!/^[A-Za-zÀ-ÿ .,'\-]+$/.test(v)) return "Full name contains invalid characters";
+        return null;
+    },
+    studentId(v) {
+        v = (v || "").trim();
+        if (!v) return "Student ID is required";
+        if (!/^[A-Za-z0-9\-]{4,20}$/.test(v)) return "Student ID must be 4–20 chars (letters, digits, dashes)";
+        return null;
+    },
+    required(v, label) {
+        if (!v || (typeof v === "string" && !v.trim())) return `${label} is required`;
+        return null;
+    },
+    academicYear(v) {
+        if (!v) return "Academic Year is required";
+        if (!/^\d{4}-\d{4}$/.test(v)) return "Academic year must be like 2025-2026";
+        const [a, b] = v.split("-").map(Number);
+        if (b !== a + 1) return "Academic year end must be one year after start";
+        return null;
+    },
+    comments(v, { requiredMsg = null, max = 500 } = {}) {
+        if (requiredMsg && (!v || !v.trim())) return requiredMsg;
+        if (v && v.length > max) return `Comments must be at most ${max} characters`;
+        return null;
+    },
+};
+
+function setFieldError(inputId, message) {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    // Remove existing error message
+    let errEl = el.parentElement.querySelector(".field-error");
+    if (errEl) errEl.remove();
+    el.classList.remove("input-error");
+    if (message) {
+        el.classList.add("input-error");
+        errEl = document.createElement("div");
+        errEl.className = "field-error";
+        errEl.textContent = message;
+        el.parentElement.appendChild(errEl);
+    }
+}
+
+function clearAllFieldErrors(formEl) {
+    (formEl || document).querySelectorAll(".field-error").forEach((n) => n.remove());
+    (formEl || document).querySelectorAll(".input-error").forEach((n) => n.classList.remove("input-error"));
+}
+
 // ============= API HELPER =============
 const API = {
     async call(endpoint, options = {}) {
@@ -338,15 +405,60 @@ function setupLoginEvents() {
         document.getElementById("faculty-fields").classList.toggle("hidden", e.target.value !== "faculty");
     });
 
+    // Real-time validation on blur for register fields
+    const wire = (id, fn) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener("blur", () => setFieldError(id, fn(el.value)));
+        el.addEventListener("input", () => {
+            if (el.classList.contains("input-error")) setFieldError(id, fn(el.value));
+        });
+    };
+    wire("register-name", (v) => Validate.fullName(v));
+    wire("register-email", (v) => Validate.email(v.trim()));
+    wire("register-password", (v) => Validate.password(v, { strict: true }));
+    wire("register-student-id", (v) => Validate.studentId(v));
+    wire("login-email", (v) => Validate.email(v.trim()));
+    wire("login-password", (v) => Validate.password(v));
+
+    // Live password strength meter for register
+    const pwEl = document.getElementById("register-password");
+    if (pwEl) {
+        const meter = document.createElement("div");
+        meter.className = "password-strength";
+        meter.innerHTML = '<div class="strength-bar"><span></span></div><div class="strength-hint">Password must be 8+ chars with a letter and a number.</div>';
+        pwEl.parentElement.appendChild(meter);
+        pwEl.addEventListener("input", () => {
+            const v = pwEl.value || "";
+            let s = 0;
+            if (v.length >= 8) s++;
+            if (/[A-Za-z]/.test(v) && /\d/.test(v)) s++;
+            if (/[^A-Za-z0-9]/.test(v)) s++;
+            if (v.length >= 12) s++;
+            const bar = meter.querySelector(".strength-bar span");
+            bar.style.width = `${(s / 4) * 100}%`;
+            bar.dataset.level = s;
+        });
+    }
+
     document.getElementById("loginForm").addEventListener("submit", async (e) => {
         e.preventDefault();
-        const btn = e.target.querySelector('button[type="submit"]');
+        const form = e.target;
+        clearAllFieldErrors(form);
+
+        const email = document.getElementById("login-email").value.trim();
+        const password = document.getElementById("login-password").value;
+        let hasErr = false;
+        const emailErr = Validate.email(email);
+        const pwErr = Validate.password(password);
+        if (emailErr) { setFieldError("login-email", emailErr); hasErr = true; }
+        if (pwErr)    { setFieldError("login-password", pwErr);  hasErr = true; }
+        if (hasErr) { showToast("Please fix the highlighted fields", "warning"); return; }
+
+        const btn = form.querySelector('button[type="submit"]');
         btn.disabled = true; btn.textContent = "Signing in...";
         try {
-            const result = await API.login({
-                email: document.getElementById("login-email").value,
-                password: document.getElementById("login-password").value,
-            });
+            const result = await API.login({ email, password });
             saveUser(result.user);
             showToast("Welcome back!");
             renderApp();
@@ -357,25 +469,50 @@ function setupLoginEvents() {
 
     document.getElementById("registerForm").addEventListener("submit", async (e) => {
         e.preventDefault();
-        const btn = e.target.querySelector('button[type="submit"]');
-        btn.disabled = true; btn.textContent = "Creating account...";
+        const form = e.target;
+        clearAllFieldErrors(form);
         const role = document.getElementById("register-role").value;
-        const userData = {
-            email: document.getElementById("register-email").value,
-            password: document.getElementById("register-password").value,
-            full_name: document.getElementById("register-name").value,
-            role,
+
+        const fullName = document.getElementById("register-name").value;
+        const email    = document.getElementById("register-email").value.trim();
+        const password = document.getElementById("register-password").value;
+
+        const errors = {
+            "register-name":     Validate.fullName(fullName),
+            "register-email":    Validate.email(email),
+            "register-password": Validate.password(password, { strict: true }),
         };
+
+        const userData = { email, password, full_name: fullName.trim(), role };
+
         if (role === "student") {
-            userData.student_id = document.getElementById("register-student-id").value;
-            userData.campus = document.getElementById("register-campus").value;
-            userData.college = document.getElementById("register-college").value;
-            userData.course = document.getElementById("register-course").value;
-            userData.year_level = document.getElementById("register-year").value;
-            userData.section = document.getElementById("register-section").value;
+            const sid    = document.getElementById("register-student-id").value.trim();
+            const campus = document.getElementById("register-campus").value;
+            const college = document.getElementById("register-college").value;
+            const course = document.getElementById("register-course").value;
+            const year   = document.getElementById("register-year").value;
+            const section = document.getElementById("register-section").value;
+            errors["register-student-id"] = Validate.studentId(sid);
+            errors["register-campus"]  = Validate.required(campus,  "Campus");
+            errors["register-college"] = Validate.required(college, "College");
+            errors["register-course"]  = Validate.required(course,  "Course");
+            errors["register-year"]    = Validate.required(year,    "Year Level");
+            errors["register-section"] = Validate.required(section, "Section");
+            Object.assign(userData, { student_id: sid, campus, college, course, year_level: year, section });
         } else if (role === "faculty") {
-            userData.office = document.getElementById("register-office").value;
+            const office = document.getElementById("register-office").value;
+            errors["register-office"] = Validate.required(office, "Office");
+            userData.office = office;
         }
+
+        let hasErr = false;
+        Object.entries(errors).forEach(([id, msg]) => {
+            if (msg) { setFieldError(id, msg); hasErr = true; }
+        });
+        if (hasErr) { showToast("Please fix the highlighted fields", "warning"); return; }
+
+        const btn = form.querySelector('button[type="submit"]');
+        btn.disabled = true; btn.textContent = "Creating account...";
         try {
             const result = await API.register(userData);
             saveUser(result.user);
@@ -815,11 +952,28 @@ function openCreateClearanceModal() {
     openModal("createClearanceModal");
     document.getElementById("createClearanceForm").onsubmit = async (e) => {
         e.preventDefault();
+        const form = e.target;
+        clearAllFieldErrors(form);
+        const semester = document.getElementById("clearance-semester").value;
+        const year = document.getElementById("clearance-year").value;
+        let hasErr = false;
+        const semErr = Validate.required(semester, "Semester");
+        const yrErr = Validate.academicYear(year);
+        if (semErr) { setFieldError("clearance-semester", semErr); hasErr = true; }
+        if (yrErr)  { setFieldError("clearance-year", yrErr);      hasErr = true; }
+        if (hasErr) { showToast("Please select a semester and academic year", "warning"); return; }
+
+        // Prevent duplicate active clearances for the same semester + AY
+        const dup = (allClearances || []).find(
+            (c) => c.semester === semester && c.academic_year === year && c.overall_status === "pending"
+        );
+        if (dup) {
+            showToast("You already have a pending clearance for this semester", "warning");
+            return;
+        }
+
         try {
-            await API.createClearance({
-                semester: document.getElementById("clearance-semester").value,
-                academic_year: document.getElementById("clearance-year").value,
-            }, currentUser.id);
+            await API.createClearance({ semester, academic_year: year }, currentUser.id);
             showToast("Clearance request submitted!");
             closeModal("createClearanceModal");
             loadDashboardContent();
@@ -914,6 +1068,17 @@ async function submitSignature(action) {
     const clearanceId = document.getElementById("current-clearance-id").value;
     const comments = document.getElementById("signature-comments").value;
     const usingSaved = document.getElementById("using-saved-sig").value === "true";
+
+    // Reject requires comments
+    if (action === "reject") {
+        const err = Validate.comments(comments, { requiredMsg: "Please provide a reason for rejection" });
+        if (err) { setFieldError("signature-comments", err); showToast(err, "warning"); return; }
+    } else {
+        const err = Validate.comments(comments);
+        if (err) { setFieldError("signature-comments", err); showToast(err, "warning"); return; }
+    }
+    setFieldError("signature-comments", null);
+
     let signatureData = null;
     if (action === "approve") {
         if (usingSaved) signatureData = getSavedSignature();
@@ -922,7 +1087,7 @@ async function submitSignature(action) {
             else { showToast("Please draw your signature", "warning"); return; }
         } else {
             const typedName = document.getElementById("typed-signature").value;
-            if (!typedName) { showToast("Please type your signature", "warning"); return; }
+            if (!typedName || !typedName.trim()) { showToast("Please type your signature", "warning"); return; }
             const canvas = document.createElement("canvas");
             canvas.width = 400; canvas.height = 100;
             const ctx = canvas.getContext("2d");
@@ -931,6 +1096,10 @@ async function submitSignature(action) {
             ctx.fillStyle = "#14532D"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
             ctx.fillText(typedName, 200, 50);
             signatureData = canvas.toDataURL();
+        }
+        if (!signatureData || !signatureData.startsWith("data:image/")) {
+            showToast("A valid signature is required to approve", "warning");
+            return;
         }
     }
     try {

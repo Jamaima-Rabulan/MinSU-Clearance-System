@@ -5,13 +5,16 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, field_validator, model_validator
 from typing import List, Optional
 import uuid
+import re
 from datetime import datetime, timezone
 import hashlib
 import bcrypt
@@ -27,6 +30,24 @@ api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# ================= Global validation error handler =================
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return the first human-friendly validation message as `detail`."""
+    errors = exc.errors()
+    if errors:
+        first = errors[0]
+        msg = first.get("msg", "Invalid input")
+        # Strip pydantic's "Value error, " prefix
+        if msg.lower().startswith("value error, "):
+            msg = msg[len("Value error, "):]
+        loc = ".".join(str(p) for p in first.get("loc", []) if p not in ("body",))
+        detail = f"{loc}: {msg}" if loc and loc not in msg.lower() else msg
+    else:
+        detail = "Invalid input"
+    return JSONResponse(status_code=422, content={"detail": detail})
 
 # ================= Constants =================
 OFFICES = [
@@ -53,6 +74,30 @@ COURSES = [
 YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year']
 SECTIONS = ['F1', 'F2', 'F3']
 
+# ================= Validation constants =================
+VALID_ROLES = {"student", "faculty", "admin"}
+VALID_SEMESTERS = {"1st Semester", "2nd Semester", "Summer"}
+VALID_ACTIONS = {"approve", "reject"}
+PASSWORD_MIN_LEN = 8
+STUDENT_ID_RE = re.compile(r"^[A-Za-z0-9\-]{4,20}$")
+ACADEMIC_YEAR_RE = re.compile(r"^\d{4}-\d{4}$")
+FULL_NAME_MIN_LEN = 3
+FULL_NAME_MAX_LEN = 120
+COMMENTS_MAX_LEN = 500
+
+
+def _validate_strong_password(pw: str) -> str:
+    if not pw or len(pw) < PASSWORD_MIN_LEN:
+        raise ValueError(f"Password must be at least {PASSWORD_MIN_LEN} characters long")
+    if len(pw) > 128:
+        raise ValueError("Password is too long (max 128 characters)")
+    if not re.search(r"[A-Za-z]", pw):
+        raise ValueError("Password must contain at least one letter")
+    if not re.search(r"\d", pw):
+        raise ValueError("Password must contain at least one number")
+    return pw
+
+
 # ================= Models =================
 class UserCreate(BaseModel):
     email: EmailStr
@@ -67,18 +112,120 @@ class UserCreate(BaseModel):
     campus: Optional[str] = None
     college: Optional[str] = None
 
+    @field_validator("password")
+    @classmethod
+    def _password_strength(cls, v: str) -> str:
+        return _validate_strong_password(v)
+
+    @field_validator("full_name")
+    @classmethod
+    def _name_ok(cls, v: str) -> str:
+        v = (v or "").strip()
+        if len(v) < FULL_NAME_MIN_LEN:
+            raise ValueError(f"Full name must be at least {FULL_NAME_MIN_LEN} characters")
+        if len(v) > FULL_NAME_MAX_LEN:
+            raise ValueError(f"Full name is too long (max {FULL_NAME_MAX_LEN})")
+        if not re.match(r"^[A-Za-zÀ-ÿ .,'\-]+$", v):
+            raise ValueError("Full name contains invalid characters")
+        return v
+
+    @field_validator("role")
+    @classmethod
+    def _role_ok(cls, v: str) -> str:
+        if v not in VALID_ROLES:
+            raise ValueError(f"Role must be one of {sorted(VALID_ROLES)}")
+        return v
+
+    @model_validator(mode="after")
+    def _role_specific(self):
+        if self.role == "student":
+            if not self.student_id or not STUDENT_ID_RE.match(self.student_id):
+                raise ValueError("Valid Student ID is required (4-20 chars, letters/digits/dashes)")
+            if not self.course or self.course not in COURSES:
+                raise ValueError("A valid Course is required for students")
+            if not self.year_level or self.year_level not in YEAR_LEVELS:
+                raise ValueError("A valid Year Level is required for students")
+            if not self.section or self.section not in SECTIONS:
+                raise ValueError("A valid Section is required for students")
+            if self.campus and self.campus not in CAMPUSES:
+                raise ValueError("Invalid Campus")
+            if self.college and self.college not in COLLEGES:
+                raise ValueError("Invalid College")
+        elif self.role == "faculty":
+            if not self.office or self.office not in OFFICES:
+                raise ValueError("A valid Office is required for faculty")
+        return self
+
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+    @field_validator("password")
+    @classmethod
+    def _password_present(cls, v: str) -> str:
+        if not v or len(v) < 1:
+            raise ValueError("Password is required")
+        if len(v) > 128:
+            raise ValueError("Password is too long")
+        return v
+
 
 class ClearanceCreate(BaseModel):
     semester: str
     academic_year: str
 
+    @field_validator("semester")
+    @classmethod
+    def _sem_ok(cls, v: str) -> str:
+        if v not in VALID_SEMESTERS:
+            raise ValueError(f"Semester must be one of {sorted(VALID_SEMESTERS)}")
+        return v
+
+    @field_validator("academic_year")
+    @classmethod
+    def _ay_ok(cls, v: str) -> str:
+        if not ACADEMIC_YEAR_RE.match(v or ""):
+            raise ValueError("Academic year must be in the format YYYY-YYYY (e.g., 2025-2026)")
+        start, end = v.split("-")
+        if int(end) != int(start) + 1:
+            raise ValueError("Academic year end must be one year after start")
+        return v
+
+
 class ClearanceProcess(BaseModel):
     action: str
     comments: Optional[str] = None
     signature_data: Optional[str] = None
+
+    @field_validator("action")
+    @classmethod
+    def _action_ok(cls, v: str) -> str:
+        if v not in VALID_ACTIONS:
+            raise ValueError(f"Action must be one of {sorted(VALID_ACTIONS)}")
+        return v
+
+    @field_validator("comments")
+    @classmethod
+    def _comments_ok(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if len(v) > COMMENTS_MAX_LEN:
+            raise ValueError(f"Comments must be at most {COMMENTS_MAX_LEN} characters")
+        return v or None
+
+    @model_validator(mode="after")
+    def _rules(self):
+        if self.action == "reject":
+            if not (self.comments and self.comments.strip()):
+                raise ValueError("Rejection reason (comments) is required when rejecting a clearance")
+        if self.action == "approve":
+            if not self.signature_data or not self.signature_data.startswith("data:image/"):
+                raise ValueError("A valid e-signature (PNG data URL) is required to approve")
+            if len(self.signature_data) > 2_000_000:
+                raise ValueError("Signature image is too large")
+        return self
 
 # ================= Helpers =================
 def generate_uuid() -> str:
@@ -182,18 +329,7 @@ async def register(user_data: UserCreate, request: Request):
         )
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    if user_data.role == "student":
-        if not user_data.student_id:
-            raise HTTPException(status_code=400, detail="Student ID is required")
-        if not user_data.course:
-            raise HTTPException(status_code=400, detail="Course is required")
-        if not user_data.year_level:
-            raise HTTPException(status_code=400, detail="Year level is required")
-        if not user_data.section:
-            raise HTTPException(status_code=400, detail="Section is required")
-    elif user_data.role == "faculty":
-        if not user_data.office or user_data.office not in OFFICES:
-            raise HTTPException(status_code=400, detail="Valid office is required for faculty")
+    # Role-specific field validation is enforced by Pydantic model_validator on UserCreate.
 
     user_id = generate_uuid()
     user_doc = {
@@ -528,7 +664,48 @@ async def admin_list_users(user_id: str):
 @api_router.delete("/admin/users/{target_user_id}")
 async def admin_delete_user(target_user_id: str, user_id: str, request: Request):
     admin = await _require_admin(user_id)
+
+    # Validation: can't delete self
+    if target_user_id == admin["id"]:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+
     target = await db.users.find_one({"id": target_user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Validation: can't delete the last remaining admin
+    if target.get("role") == "admin":
+        admin_count = await db.users.count_documents({"role": "admin"})
+        if admin_count <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete the last administrator. Promote another user to admin first.",
+            )
+
+    # Validation: block deletion if the target has active (pending) clearances
+    if target.get("role") == "student":
+        active = await db.clearances.count_documents(
+            {"student_id": target_user_id, "overall_status": "pending"}
+        )
+        if active > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Student has {active} pending clearance(s). Resolve them before deleting.",
+            )
+    elif target.get("role") == "faculty":
+        office = target.get("office")
+        pending_for_office = await db.clearances.count_documents(
+            {"approvals": {"$elemMatch": {"office": office, "status": "pending"}}}
+        )
+        if pending_for_office > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Faculty office '{office}' has {pending_for_office} pending clearance(s). "
+                    "Reassign or resolve before deleting."
+                ),
+            )
+
     result = await db.users.delete_one({"id": target_user_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
@@ -537,8 +714,7 @@ async def admin_delete_user(target_user_id: str, user_id: str, request: Request)
         actor_id=admin["id"], actor_email=admin["email"], actor_role="admin",
         action="admin.delete_user", resource_type="user", resource_id=target_user_id,
         status="success",
-        details={"target_email": target.get("email") if target else None,
-                 "target_role": target.get("role") if target else None},
+        details={"target_email": target.get("email"), "target_role": target.get("role")},
         request=request,
     )
     return {"success": True, "message": "User deleted successfully"}
