@@ -793,6 +793,15 @@ async def admin_unlock_user(target_user_id: str, user_id: str, request: Request)
         {"id": target_user_id},
         {"$unset": {"lockout_until": "", "last_lockout_at": ""}},
     )
+    # Also clear the recent failure counter so the user isn't re-locked immediately
+    # on their first mistyped password after being unlocked.
+    since = (datetime.now(timezone.utc) - timedelta(minutes=BRUTEFORCE_WINDOW_MIN)).isoformat()
+    await db.audit_logs.delete_many({
+        "action": "user.login",
+        "status": "failure",
+        "actor_email": target["email"],
+        "timestamp": {"$gte": since},
+    })
     await write_audit(
         actor_id=admin["id"], actor_email=admin["email"], actor_role="admin",
         action="admin.unlock_user", resource_type="user", resource_id=target_user_id,

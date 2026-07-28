@@ -72,6 +72,23 @@ User choices:
   guard, `novalidate` forms so custom UI wins over native browser bubbles.
 - [x] Testing agent: **45/45 backend tests green**, all frontend flows green.
 
+### Iteration 3 — Brute-force protection (2026-01-23)
+- [x] **Login lockout** — 5 failed attempts within a 15-min rolling window
+  locks the account for 15 min. Correct password is rejected with 429 while
+  locked. Failure counts are derived from `audit_logs` (no new schema); the
+  lockout timestamp lives on `users.lockout_until`.
+- [x] **Per-IP secondary shield** — 20 failures/15 min from the same IP
+  returns 429 (protects against user enumeration).
+- [x] **Audit trail** — new `user.locked` entry on threshold, `admin.unlock_user`
+  entry on manual unlock.
+- [x] **Admin unlock endpoint** — `POST /api/admin/users/{id}/unlock` clears
+  `lockout_until` **and** purges recent failure audit entries so the user isn't
+  immediately re-locked.
+- [x] **Admin UI** — Users table now shows a Status column (`Active` / `🔒 Locked`)
+  and an `Unlock` button on locked rows.
+- [x] Testing agent: **54/55 backend tests pass** (1 pre-existing skip), all
+  frontend flows green.
+
 ## Backlog (P1)
 - Replace `?user_id=…` query-param auth with JWT/session cookies.
 - Rate-limit `/api/auth/login` + brute-force lockout (audit failures already
