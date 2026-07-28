@@ -272,7 +272,7 @@ function renderLoginPage() {
           </div>
 
           <div id="login-tab" class="tab-content active">
-            <form id="loginForm" data-testid="login-form">
+            <form id="loginForm" novalidate data-testid="login-form">
               <div class="form-group">
                 <label>Email Address</label>
                 <input type="email" id="login-email" placeholder="you@minsu.edu.ph" data-testid="login-email-input" required>
@@ -289,7 +289,7 @@ function renderLoginPage() {
           </div>
 
           <div id="register-tab" class="tab-content">
-            <form id="registerForm" data-testid="register-form">
+            <form id="registerForm" novalidate data-testid="register-form">
               <div class="form-group">
                 <label>Full Name (Last, First, MI)</label>
                 <input type="text" id="register-name" placeholder="Dela Cruz, Juan A." data-testid="register-name-input" required>
@@ -863,7 +863,7 @@ function renderModals() {
     <div id="createClearanceModal" class="modal">
       <div class="modal-content">
         <div class="modal-header"><h2>Request New Clearance</h2><button class="modal-close" onclick="closeModal('createClearanceModal')">&times;</button></div>
-        <form id="createClearanceForm" data-testid="create-clearance-form">
+        <form id="createClearanceForm" novalidate data-testid="create-clearance-form">
           <div class="modal-body">
             <div class="form-group"><label>Semester</label>
               <select id="clearance-semester" data-testid="clearance-semester-select" required>

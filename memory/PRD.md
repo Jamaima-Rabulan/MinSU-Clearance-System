@@ -1,81 +1,89 @@
 # MinSU Clearance System — PRD
 
 ## Original Problem Statement
-Adopt & improve <https://github.com/jhamelma2013-coder/minsu_clearance_system>.
-User choices over subsequent iterations:
+Adopt and improve the GitHub repo
+<https://github.com/jhamelma2013-coder/minsu_clearance_system>.
+User choices:
+1. **1b** — Clone, set up, and add features/fixes.
+2. Add **audit log** + **audit trail**.
+3. Use **bcrypt** for password hashing.
+4. Make UI more presentable with best fonts + MinSU color palette.
+5. Adapt to the environment.
+6. **(Iter 2)** Put validation on all important actions.
 
-1. **Iter 1** — Clone/setup, add audit log + audit trail, replace SHA-256 with bcrypt, upgrade design (fonts, MinSU palette).
-2. **Iter 2** — Add brute-force lockout on login, enforce password policy at register, **convert the whole app to pure PHP for Hostinger** (MySQL/MariaDB, native `$_SESSION`, standard password policy 8+ / letter+digit, 5 failed attempts → 15-minute lockout).
-
-## Architecture
-Two parallel builds live in `/app`:
-
-### `/app/backend` + `/app/frontend` (Iter 1 stack — FastAPI + MongoDB + React shell)
-- Kept for reference; still running on ports 8001 (backend) and 3000 (frontend).
-- Backend uses bcrypt, audit log, and the MinSU-branded SPA.
-
-### `/app/php/` (Iter 2 stack — pure PHP + MySQL — production for Hostinger)
-- `schema.sql` — MySQL schema (5 tables including `login_attempts`).
-- `public/index.html` + `public/js/app.js` + `public/css/style.css` + `public/images/` — the same MinSU-branded SPA, refactored to use session cookies (`credentials: 'include'`) instead of `?user_id=`.
-- `public/api/index.php` — front-controller with every route.
-- `public/api/lib/` — `bootstrap.php` (session + PDO + admin seed), `util.php` (validation + constants), `auth.php` (session helpers + brute-force lockout), `audit.php` (log writer).
-- `public/.htaccess` — Apache rewrite `/api/*` → `api/index.php`, SPA fallback, security headers, file protection.
-- `README-HOSTINGER.md` — 5-step deployment guide.
-- Zipped bundle: `/app/minsu_php_hostinger.zip` (686 KB).
+## Architecture (as deployed to /app)
+- **Backend** — FastAPI (`/app/backend/server.py`) on port 8001. MongoDB via Motor.
+  All routes prefixed with `/api`.
+- **Frontend** — React CRA shell mounts the vanilla-JS SPA at
+  `/app/frontend/public/js/app.js` + `/css/style.css`. App.js injects the
+  script/stylesheet once after mount and exposes `window.__MINSU_BACKEND_URL__`.
+- **MongoDB** — local, database `minsu_clearance`.
 
 ## User Personas
-- **Student** — submits clearance requests, tracks approvals, prints slip, views per-clearance audit trail.
-- **Faculty / Clearing Officer** — sees pending clearances for their office, signs (draw/type/saved), approves or rejects. Registrar can only approve last.
-- **Administrator** — manages users, filters full audit trail, deletes users.
+- **Student** — creates clearance requests, tracks approvals, prints slip.
+- **Faculty / Clearing Officer** — approves/rejects for their office (with
+  e-signature); Registrar-last rule enforced.
+- **Administrator** — manages users, reviews audit trail.
 
-## Security (PHP build)
-- **Bcrypt** password hashing (`password_hash(PASSWORD_BCRYPT)`).
-- **Password policy** at register: `min 8 chars, ≥1 letter, ≥1 digit, ≤128 chars`.
-- **Brute-force lockout** on login: keyed by `IP:email`, 5 failures within 15 minutes = 15-minute lockout, returns HTTP 429.
-- **Native PHP sessions** with `HttpOnly`, `SameSite=Lax`, `Secure` when HTTPS.
-- **`session_regenerate_id(true)`** on login and register.
-- **Server-side validation** on every payload: email format, role enum, office/campus/college/course/year/section enums, semester enum, AY regex `YYYY-YYYY`, UUID regex on IDs, size caps on signature and comments.
-- **Audit log** persisted to `audit_logs` for register / login (success + failure + lockout) / logout / clearance.create / clearance.approve / clearance.reject / admin.delete_user with IP + UA.
-- **Static-file protection** via `.htaccess` (denies config.php, schema.sql, .env, api/lib/).
+## Core Requirements
+- Role-based registration (student / faculty / admin).
+- Bcrypt (`$2b$`) password hashing + legacy SHA-256 migration on login.
+- 6-office MinSU clearance workflow with Registrar-last rule.
+- E-signature (draw / type / saved local) stored as data-URL.
+- Printable official MinSU clearance slip.
+- Comprehensive audit log (auth, clearance, admin) + per-clearance audit trail.
+- Default admin auto-seeded: `admin@minsu.edu.ph` / `Admin@MinSU2025`.
+- Validation on every important action (see next section).
 
-## Design System (unchanged from Iter 1)
-- Deep Forest Green `#14532D` + Antique Gold `#C79B2A` on warm parchment.
-- Fraunces (editorial serif) headings + Plus Jakarta Sans body + JetBrains Mono code chips.
+## Design System
+- Palette: Deep Forest Green `#14532D` + Antique Gold `#C79B2A` on warm
+  parchment `#FAF7F0`. Gradient green→gold accents.
+- Typography: Fraunces (editorial serif) headings, Plus Jakarta Sans body,
+  JetBrains Mono for code / audit chips.
 
-## What's Been Implemented (2026-01-23)
-### Iter 1 (previous)
-- [x] Repo cloned; FastAPI + React shell working.
-- [x] Bcrypt hashing (with SHA-256 legacy migration).
-- [x] Audit log + trail (backend + admin UI + per-clearance modal).
-- [x] Premium MinSU palette + typography.
-- [x] Testing agent: 32/32 backend, all frontend flows green.
+## What's Been Implemented
 
-### Iter 2 (this session)
-- [x] Pure PHP + MySQL rewrite in `/app/php/`.
-- [x] MySQL schema with `login_attempts` table for lockout.
-- [x] Front-controller router (`api/index.php`) mirroring every FastAPI route.
-- [x] Native PHP sessions replacing `?user_id=` query params.
-- [x] SPA refactored to use `credentials: 'include'` + `/auth/me` boot.
-- [x] Brute-force lockout (5 failures / 15-min window / 15-min lock).
-- [x] Password policy (8+, letter, digit) enforced at register.
-- [x] Server-side validation on every endpoint.
-- [x] `.htaccess` with pretty URLs, SPA fallback, security headers, file protection.
-- [x] Deployment guide + zipped bundle ready for Hostinger upload.
-- [x] End-to-end curl tests: register → login → lockout → clearance create → Registrar-last block → office approve → audit trail. All green.
+### Iteration 1 (2026-01-23)
+- [x] Repo cloned and adapted; supervisor-managed backend + frontend.
+- [x] FastAPI backend rebuilt with bcrypt + comprehensive audit log.
+- [x] MinSU vanilla-JS SPA wired inside React CRA shell.
+- [x] Premium MinSU palette + Fraunces / Plus Jakarta Sans typography.
+- [x] Admin Users view + Admin Audit Trail view with filters.
+- [x] Per-clearance audit-trail modal.
+- [x] Default admin idempotent seeding.
+- [x] Testing agent: **32/32 backend + all frontend flows green**.
+
+### Iteration 2 — Validation (2026-01-23)
+- [x] **Server-side (Pydantic + global RequestValidationError handler)**
+  - Password policy: min 8 chars, ≥ 1 letter + ≥ 1 number.
+  - Full name: 3–120 chars, letters/spaces/`.,'-` only.
+  - Role enum (student/faculty/admin) + role-specific required fields.
+  - Student ID pattern `^[A-Za-z0-9-]{4,20}$`; enum validation on
+    course / year / section / campus / college.
+  - Semester enum + academic-year `YYYY-YYYY` with `end == start + 1` rule.
+  - Clearance action enum; comments ≤ 500 chars.
+  - **Approve requires a valid `data:image/…` signature (≤ 2 MB).**
+  - **Reject requires non-empty comments.**
+  - Uniform error responses: `422 {"detail": "<single message>"}`.
+- [x] **Admin safeguards** — cannot delete self, cannot delete last admin,
+  cannot delete student/faculty with pending clearances (400 with reason).
+- [x] **Client-side** — inline red field errors + `.input-error` borders,
+  live password-strength meter, blur/input re-validation, duplicate-clearance
+  guard, `novalidate` forms so custom UI wins over native browser bubbles.
+- [x] Testing agent: **45/45 backend tests green**, all frontend flows green.
 
 ## Backlog (P1)
-- Email notifications (SendGrid/Resend) on approval/rejection.
-- CSV / PDF export of the audit trail.
-- Admin UI to reset a user's password / manually clear a lockout.
-- Password reset flow (email verification).
+- Replace `?user_id=…` query-param auth with JWT/session cookies.
+- Rate-limit `/api/auth/login` + brute-force lockout (audit failures already
+  captured — just not consumed).
+- Split `server.py` into routers (auth / clearances / admin / audit).
 
 ## Backlog (P2)
-- Sortable columns on the users & audit-log tables.
-- Bulk approve for a single office.
-- 2FA via TOTP for faculty and admin.
+- CSV / PDF export for the audit log.
+- Email notifications on approval / rejection.
+- Admin role-editing UI (promote / demote).
 
 ## Next Action Items
-- Copy `php/public/api/config.example.php` → `config.php` and fill Hostinger DB creds.
-- Import `php/schema.sql` in phpMyAdmin.
-- Upload contents of `php/public/` to `public_html/`.
-- Change the default admin password immediately after first login.
+- Wire brute-force lockout using existing audit failure records.
+- Introduce JWT auth and remove `user_id` query params.
+- Seed demo data (students + 6 faculty offices) for a one-click preview.
