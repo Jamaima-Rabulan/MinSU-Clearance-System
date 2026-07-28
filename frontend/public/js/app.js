@@ -130,6 +130,7 @@ const API = {
     getConstants: () => API.call("/constants"),
     getUsers: (id) => API.call(`/admin/users?user_id=${id}`),
     deleteUser: (target, id) => API.call(`/admin/users/${target}?user_id=${id}`, { method: "DELETE" }),
+    unlockUser: (target, id) => API.call(`/admin/users/${target}/unlock?user_id=${id}`, { method: "POST" }),
     getAuditLogs: (id, filters = {}) => {
         let url = `/admin/audit-logs?user_id=${id}`;
         Object.keys(filters).forEach((k) => {
@@ -1129,7 +1130,7 @@ async function loadUsersContent() {
             <table class="clearance-table" data-testid="users-table">
               <thead><tr>
                 <th>Full Name</th><th>Email</th><th>Role</th>
-                <th>Office / Course</th><th>Registered</th><th>Action</th>
+                <th>Office / Course</th><th>Status</th><th>Registered</th><th>Actions</th>
               </tr></thead>
               <tbody>
                 ${users.map((u) => `
@@ -1138,8 +1139,12 @@ async function loadUsersContent() {
                     <td>${escapeHtml(u.email)}</td>
                     <td><span class="badge badge-${u.role === "admin" ? "approved" : u.role === "faculty" ? "pending" : "muted"}">${escapeHtml(u.role)}</span></td>
                     <td>${escapeHtml(u.office || u.course || "-")}</td>
+                    <td>${u.is_locked
+                        ? '<span class="badge badge-failure" data-testid="user-locked-badge">🔒 Locked</span>'
+                        : '<span class="badge badge-success">Active</span>'}</td>
                     <td>${u.created_at ? formatDate(u.created_at) : "-"}</td>
-                    <td>
+                    <td class="user-actions">
+                      ${u.is_locked ? `<button class="btn btn-sm btn-outline" onclick="unlockUser('${u.id}','${escapeHtml(u.full_name)}')" data-testid="unlock-user-${u.id}">Unlock</button>` : ""}
                       ${u.id !== currentUser.id ? `<button class="btn btn-sm btn-danger" onclick="confirmDeleteUser('${u.id}','${escapeHtml(u.full_name)}')" data-testid="delete-user-${u.id}">Delete</button>` : '<span class="text-muted">you</span>'}
                     </td>
                   </tr>`).join("")}
@@ -1157,6 +1162,15 @@ async function confirmDeleteUser(id, name) {
     try {
         await API.deleteUser(id, currentUser.id);
         showToast("User deleted");
+        loadUsersContent();
+    } catch {}
+}
+
+async function unlockUser(id, name) {
+    if (!confirm(`Unlock account for "${name}"? Their failed-login lockout will be cleared.`)) return;
+    try {
+        await API.unlockUser(id, currentUser.id);
+        showToast("Account unlocked");
         loadUsersContent();
     } catch {}
 }
@@ -1389,6 +1403,7 @@ window.filterClearances = filterClearances;
 window.applyFilters = applyFilters;
 window.applyAuditFilters = applyAuditFilters;
 window.confirmDeleteUser = confirmDeleteUser;
+window.unlockUser = unlockUser;
 window.printClearance = printClearance;
 window.loadDashboardContent = loadDashboardContent;
 window.renderApp = renderApp;

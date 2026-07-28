@@ -2078,3 +2078,11 @@ body::before {
     color: var(--text-muted);
     font-weight: 500;
 }
+
+/* User actions column: keep buttons side-by-side */
+.user-actions {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    align-items: center;
+}

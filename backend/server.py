@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, EmailStr, field_validator, model_validato
 from typing import List, Optional
 import uuid
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import bcrypt
 
@@ -359,9 +359,100 @@ async def register(user_data: UserCreate, request: Request):
     return {"success": True, "user": public_user(user_doc), "message": "Registration successful!"}
 
 
+# ================= Brute-force protection =================
+
+BRUTEFORCE_MAX_FAILURES = 5      # threshold of failures within the window
+BRUTEFORCE_WINDOW_MIN = 15       # rolling window (minutes) counted for triggering lockout
+BRUTEFORCE_LOCKOUT_MIN = 15      # lockout duration (minutes) once threshold is exceeded
+BRUTEFORCE_IP_MAX_FAILURES = 20  # per-IP secondary shield across all accounts
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _count_recent_failures(email: str, minutes: int) -> int:
+    since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    return await db.audit_logs.count_documents({
+        "action": "user.login",
+        "status": "failure",
+        "actor_email": email,
+        "timestamp": {"$gte": since},
+    })
+
+
+async def _count_recent_failures_by_ip(ip: str, minutes: int) -> int:
+    if not ip or ip == "-":
+        return 0
+    since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    return await db.audit_logs.count_documents({
+        "action": "user.login",
+        "status": "failure",
+        "ip_address": ip,
+        "timestamp": {"$gte": since},
+    })
+
+
+async def _check_bruteforce(email: str, request: Request) -> None:
+    """Raise 429 if the account or the source IP is currently locked out."""
+    # Per-account lockout (persisted on user doc if we know the user)
+    user = await db.users.find_one({"email": email}, {"lockout_until": 1})
+    if user and user.get("lockout_until"):
+        try:
+            until = datetime.fromisoformat(user["lockout_until"])
+        except ValueError:
+            until = None
+        if until and until > datetime.now(timezone.utc):
+            remaining = int((until - datetime.now(timezone.utc)).total_seconds())
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Too many failed attempts. Account is locked. "
+                    f"Try again in {max(1, remaining // 60)} minute(s)."
+                ),
+            )
+
+    # Per-IP secondary shield (protects against user enumeration)
+    ip = get_client_ip(request)
+    ip_fails = await _count_recent_failures_by_ip(ip, BRUTEFORCE_WINDOW_MIN)
+    if ip_fails >= BRUTEFORCE_IP_MAX_FAILURES:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts from this network. Please try again later.",
+        )
+
+
+async def _register_failure(email: str) -> Optional[str]:
+    """Increment failure counter. Return lockout_until iso string if we just locked the account."""
+    user = await db.users.find_one({"email": email}, {"id": 1})
+    if not user:
+        return None
+    fails = await _count_recent_failures(email, BRUTEFORCE_WINDOW_MIN)
+    # The current attempt's failure has already been written to audit_logs
+    # before this helper runs, so `fails` already includes it.
+    if fails >= BRUTEFORCE_MAX_FAILURES:
+        lockout_until = (
+            datetime.now(timezone.utc) + timedelta(minutes=BRUTEFORCE_LOCKOUT_MIN)
+        ).isoformat()
+        await db.users.update_one(
+            {"email": email},
+            {"$set": {"lockout_until": lockout_until, "last_lockout_at": _iso_now()}},
+        )
+        return lockout_until
+    return None
+
+
+async def _clear_failures(email: str) -> None:
+    await db.users.update_one({"email": email}, {"$unset": {"lockout_until": ""}})
+
+
 @api_router.post("/auth/login")
 async def login(credentials: UserLogin, request: Request):
     email = credentials.email.lower()
+
+    # 1. Enforce lockout FIRST (before any DB / hash work leaks timing info)
+    await _check_bruteforce(email, request)
+
     user = await db.users.find_one({"email": email})
     if not user:
         await write_audit(
@@ -377,9 +468,26 @@ async def login(credentials: UserLogin, request: Request):
             action="user.login", resource_type="user", resource_id=user["id"],
             status="failure", details={"reason": "invalid_password"}, request=request,
         )
+        lockout = await _register_failure(email)
+        if lockout:
+            await write_audit(
+                actor_id=user["id"], actor_email=email, actor_role=user.get("role"),
+                action="user.locked", resource_type="user", resource_id=user["id"],
+                status="failure",
+                details={"lockout_until": lockout, "threshold": BRUTEFORCE_MAX_FAILURES},
+                request=request,
+            )
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Too many failed attempts. Account has been locked for "
+                    f"{BRUTEFORCE_LOCKOUT_MIN} minutes."
+                ),
+            )
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Upgrade legacy hashes on successful login
+    # Successful login — clear counters + migrate legacy hash if needed
+    await _clear_failures(email)
     if not user["password_hash"].startswith("$2"):
         await migrate_to_bcrypt(user["id"], credentials.password)
 
@@ -658,7 +766,41 @@ async def admin_list_users(user_id: str):
     users = await db.users.find(
         {}, {"_id": 0, "password_hash": 0, "verification_code": 0}
     ).sort("created_at", -1).to_list(1000)
+
+    # Annotate each user with a live "is_locked" flag derived from lockout_until
+    now = datetime.now(timezone.utc)
+    for u in users:
+        raw = u.get("lockout_until")
+        locked = False
+        if raw:
+            try:
+                locked = datetime.fromisoformat(raw) > now
+            except ValueError:
+                locked = False
+        u["is_locked"] = locked
     return {"users": users}
+
+
+@api_router.post("/admin/users/{target_user_id}/unlock")
+async def admin_unlock_user(target_user_id: str, user_id: str, request: Request):
+    admin = await _require_admin(user_id)
+    target = await db.users.find_one({"id": target_user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    was_locked = bool(target.get("lockout_until"))
+    await db.users.update_one(
+        {"id": target_user_id},
+        {"$unset": {"lockout_until": "", "last_lockout_at": ""}},
+    )
+    await write_audit(
+        actor_id=admin["id"], actor_email=admin["email"], actor_role="admin",
+        action="admin.unlock_user", resource_type="user", resource_id=target_user_id,
+        status="success",
+        details={"target_email": target.get("email"), "was_locked": was_locked},
+        request=request,
+    )
+    return {"success": True, "message": "Account unlocked"}
 
 
 @api_router.delete("/admin/users/{target_user_id}")

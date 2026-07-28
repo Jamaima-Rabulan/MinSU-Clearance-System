@@ -1,0 +1,40 @@
+{
+  "summary": "MinSU Clearance System — iteration 3 brute-force + admin unlock coverage. Backend: 54/55 pytest pass (1 skipped last-admin guard, unchanged from iter2). Added new /app/backend/tests/test_bruteforce.py (10 tests, all PASS) covering: 4x401 then 429 lock on 5th attempt; correct-password blocked while locked; successful login clears lockout_until; unknown emails stay 401 (no auto-lock); user.locked audit entry written on threshold crossing; admin.unlock_user audit entry written; POST /api/admin/users/{id}/unlock returns 200 (admin), 403 (non-admin), 404 (unknown target); GET /api/admin/users includes is_locked boolean per user. Frontend: verified via Playwright — created victim via API, locked it with 5 wrong logins (got 401,401,401,401,429), logged in as admin, opened Users tab (nav-users), Users table renders Status column with red '🔒 Locked' badge and Unlock button for locked users. Clicking [data-testid='unlock-user-<id>'] triggers confirm dialog (auto-accepted), POSTs to /api/admin/users/{id}/unlock, shows 'Account unlocked' toast, and reloads with victim row now showing green 'Active' badge (no Unlock button). All regression flows still function. is_locked flag returned correctly from GET /api/admin/users.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/login (IP shield)", "issue": "Per-IP 20-failure secondary shield is enforced but only per rolling window; cannot be easily reset without direct DB access. If pytest runs many brute-force tests without purging audit_logs, the IP shield may trip and cause admin login attempts from the same IP to 429 too. Mitigated in test_bruteforce.py via _reset_ip_failures fixture."},
+      {"endpoint": "CORS middleware", "issue": "Carried over: allow_origins=['*'] with allow_credentials=True."},
+      {"endpoint": "POST /api/auth/logout", "issue": "Carried over: still accepts unknown user_id and returns success."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_bruteforce.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_check_bruteforce runs BEFORE any user lookup, so a locked account cannot leak timing info — good.",
+    "_register_failure counts the just-written failure audit as part of the threshold check (comment in code confirms). Threshold is `fails >= BRUTEFORCE_MAX_FAILURES` after the 5th failure has been written, which is correct.",
+    "Lockout state is stored on user document (lockout_until) AND derived from audit_logs count — dual source of truth. Successful login clears lockout_until but NOT the historical failure audit entries; the rolling window naturally lets them age out.",
+    "GET /api/admin/users correctly derives is_locked live from lockout_until vs now(), so a stale future timestamp on a user document surfaces as locked in UI — good.",
+    "admin_unlock_user only $unsets lockout_until/last_lockout_at; it does NOT purge the failure audit entries. This is arguably correct (audit history is immutable) but means an unlocked user whose failure count is still within the 15-min window will re-lock quickly if they mistype again. Consider clearing the failure counter for the user on manual unlock OR document the behaviour.",
+    "Frontend unlockUser() uses window.confirm — same UX as delete. data-testid='unlock-user-<uuid>' present and matched by test. Toast + row refresh work correctly.",
+    "No client-side rate-limiting on the Unlock button; rapid double-click could send two POSTs (both would 200 harmlessly, still not ideal)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_bruteforce.py (NEW: 10 tests covering brute-force lockout + admin unlock + is_locked field)"
+  ],
+  "success_rate": {"backend": "100% (54/55 pass, 1 skip)", "frontend": "100% — admin unlock flow verified end-to-end"},
+  "test_credentials": "Admin: admin@minsu.edu.ph / Admin@MinSU2025 (auto-seeded).",
+  "seed_data_creation": "Each brute-force test creates a fresh victim student (bf_victim_<runid>_<rand>@minsu.edu.ph) with password Correct1Pass. Fixture resets lockout + purges IP-failure audit entries between tests. UI test additionally creates one uix<ts>@minsu.edu.ph victim.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Brute-force config: MAX_FAILURES=5, WINDOW=15min, LOCKOUT=15min, IP_MAX_FAILURES=20. Lockout stored as ISO string in users.lockout_until; is_locked is derived live in /api/admin/users. To reset test state manually: db.users.updateOne({email:X},{$unset:{lockout_until:''}}); db.audit_logs.deleteMany({actor_email:X,status:'failure'}). To also clear IP shield: db.audit_logs.deleteMany({action:'user.login',status:'failure'}). Frontend selectors: [data-testid='users-table'], [data-testid='user-locked-badge'], [data-testid='unlock-user-<uuid>'], [data-testid='nav-users'], [data-testid='login-submit-button']. window.confirm is used for the unlock confirmation dialog (Playwright: page.on('dialog', d.accept()))."
+}
