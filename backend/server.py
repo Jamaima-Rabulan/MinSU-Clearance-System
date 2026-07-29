@@ -966,10 +966,21 @@ async def shutdown_db_client():
 
 # ================= App assembly =================
 app.include_router(api_router)
+
+# CORS: comma-separated list via CORS_ORIGINS, or "*" for open (default while embedded
+# in an all-in-one preview). On Render, set CORS_ORIGINS to the exact frontend URL(s).
+_raw_origins = os.environ.get("CORS_ORIGINS", "*").strip()
+if _raw_origins in ("", "*"):
+    _origins = ["*"]
+    _allow_credentials = False  # cannot use credentials with "*" per CORS spec
+else:
+    _origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+    _allow_credentials = True
+
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
+    allow_credentials=_allow_credentials,
+    allow_origins=_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

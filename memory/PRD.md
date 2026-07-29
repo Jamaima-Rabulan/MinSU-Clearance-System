@@ -89,6 +89,18 @@ User choices:
 - [x] Testing agent: **54/55 backend tests pass** (1 pre-existing skip), all
   frontend flows green.
 
+### Iteration 4 — Render deploy package + login polish (2026-01-23)
+- [x] **Render Blueprint** (`render.yaml`) for one-click deploy of both
+  services; slim `requirements.txt` (removed unused pandas/numpy/boto3/…);
+  `Procfile`, `runtime.txt`, `.nvmrc`, `.env.example` files.
+- [x] CORS made configurable via `CORS_ORIGINS` env var (comma-separated).
+- [x] **Deploy zip** at `/app/dist/minsu-clearance-system.zip` (~933 KB) —
+  ready to upload to Render or push to GitHub.
+- [x] Comprehensive **README.md** with step-by-step Render + local setup.
+- [x] Login-right panel polish — lightened green overlay so the campus photo
+  shows through; trimmed text to just "Welcome to MinSU / Your paperless
+  student clearance."
+
 ## Backlog (P1)
 - Replace `?user_id=…` query-param auth with JWT/session cookies.
 - Rate-limit `/api/auth/login` + brute-force lockout (audit failures already

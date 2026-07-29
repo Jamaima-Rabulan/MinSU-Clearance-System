@@ -377,13 +377,7 @@ function renderLoginPage() {
       <div class="login-right">
         <div class="login-right-content">
           <h2>Welcome to MinSU</h2>
-          <p>Secure, paperless student clearance processing for Mindoro State University.</p>
-          <ul class="login-feature-list">
-            <li><span class="dot"></span> Bcrypt-secured authentication</li>
-            <li><span class="dot"></span> Full audit trail on every action</li>
-            <li><span class="dot"></span> Digital signatures for officers</li>
-            <li><span class="dot"></span> Printable official clearance slip</li>
-          </ul>
+          <p>Your paperless student clearance.</p>
         </div>
       </div>
     </div>

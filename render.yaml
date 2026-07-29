@@ -1,0 +1,65 @@
+# Render Blueprint for the MinSU Clearance System
+# Docs: https://render.com/docs/blueprint-spec
+#
+# One-click deploy:
+#   1. Fork/push this repo to GitHub
+#   2. In Render: New + → Blueprint → connect the repo
+#   3. Provide the MONGO_URL secret (MongoDB Atlas connection string)
+#   4. After the backend goes live, copy its URL and set REACT_APP_BACKEND_URL
+#      on the static site + set CORS_ORIGINS on the backend to the static-site URL.
+
+services:
+  # ---------- Backend (FastAPI) ----------
+  - type: web
+    name: minsu-clearance-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/
+    autoDeploy: true
+    envVars:
+      - key: MONGO_URL
+        sync: false                           # Paste your MongoDB Atlas URL in Render
+      - key: DB_NAME
+        value: minsu_clearance
+      - key: ADMIN_EMAIL
+        value: admin@minsu.edu.ph
+      - key: ADMIN_PASSWORD
+        generateValue: true                   # Render generates a strong random password
+      - key: CORS_ORIGINS
+        sync: false                           # Set to your static-site URL once known
+      - key: PYTHON_VERSION
+        value: 3.11.9
+
+  # ---------- Frontend (React CRA static build) ----------
+  - type: web
+    name: minsu-clearance-frontend
+    runtime: static
+    plan: free
+    rootDir: frontend
+    buildCommand: yarn install --frozen-lockfile && yarn build
+    staticPublishPath: ./build
+    autoDeploy: true
+    envVars:
+      - key: REACT_APP_BACKEND_URL
+        sync: false                           # Set to backend URL, e.g. https://minsu-clearance-backend.onrender.com
+      - key: NODE_VERSION
+        value: 20.11.1
+      - key: CI
+        value: "false"
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
