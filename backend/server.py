@@ -760,25 +760,42 @@ async def _require_admin(user_id: str) -> dict:
     return user
 
 
-@api_router.get("/admin/users")
-async def admin_list_users(user_id: str):
-    await _require_admin(user_id)
-    users = await db.users.find(
-        {}, {"_id": 0, "password_hash": 0, "verification_code": 0}
-    ).sort("created_at", -1).to_list(1000)
+@api_router.get("/clearances/list")
+async def list_clearances(
+    user_id: str,
+    course: Optional[str] = None,
+    year_level: Optional[str] = None,
+    section: Optional[str] = None,
+    campus: Optional[str] = None,
+    college: Optional[str] = None,
+    status: Optional[str] = None,
+):
+    user = await db.users.find_one({"id": user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-    # Annotate each user with a live "is_locked" flag derived from lockout_until
-    now = datetime.now(timezone.utc)
-    for u in users:
-        raw = u.get("lockout_until")
-        locked = False
-        if raw:
-            try:
-                locked = datetime.fromisoformat(raw) > now
-            except ValueError:
-                locked = False
-        u["is_locked"] = locked
-    return {"users": users}
+    query: dict = {}
+    if user["role"] == "student":
+        query["student_id"] = user["id"]
+    elif user["role"] == "faculty":
+        query["approvals"] = {
+            "$elemMatch": {"office": user.get("office")}
+        }
+    if course:
+        query["course"] = course
+    if year_level:
+        query["year_level"] = year_level
+    if section:
+        query["section"] = section
+    if campus:
+        query["campus"] = campus
+    if college:
+        query["college"] = college
+    if status:
+        query["overall_status"] = status
+
+    clearances = await db.clearances.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return {"clearances": clearances}
 
 
 @api_router.post("/admin/users/{target_user_id}/unlock")
