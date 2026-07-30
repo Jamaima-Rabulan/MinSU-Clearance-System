@@ -588,10 +588,10 @@ async def list_clearances(
     query: dict = {}
     if user["role"] == "student":
         query["student_id"] = user["id"]
-    elif user["role"] == "faculty":
-        query["approvals"] = {
-            "$elemMatch": {"office": user.get("office"), "status": "pending"}
-        }
+  elif user["role"] == "faculty":
+    query["approvals"] = {
+        "$elemMatch": {"office": user.get("office")}
+    }
     if course:
         query["course"] = course
     if year_level:
