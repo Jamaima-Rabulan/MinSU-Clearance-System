@@ -529,36 +529,6 @@ async def create_clearance(data: ClearanceCreate, user_id: str, request: Request
     if user["role"] != "student":
         raise HTTPException(status_code=403, detail="Only students can create clearances")
 
-    @api_router.get("/clearances/list")
-async def list_clearances(
-    user_id: str,
-    course: Optional[str] = None,
-    year_level: Optional[str] = None,
-    section: Optional[str] = None,
-    campus: Optional[str] = None,
-    college: Optional[str] = None,
-    status: Optional[str] = None,
-):
-    user = await db.users.find_one({"id": user_id})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-        
-    if course:
-        query["course"] = course
-    if year_level:
-        query["year_level"] = year_level
-    if section:
-        query["section"] = section
-    if campus:
-        query["campus"] = campus
-    if college:
-        query["college"] = college
-    if status:
-        query["overall_status"] = status
-
-    clearances = await db.clearances.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    return {"clearances": clearances}
-
     clearance_id = generate_uuid()
     approvals = [{
         "office": office,
