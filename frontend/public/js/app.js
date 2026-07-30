@@ -207,9 +207,11 @@ function loadUser() {
     }
 }
 async function logout() {
+    if (!confirm("Are you sure you want to sign out?")) return;
     try { if (currentUser) await API.logout(currentUser.id); } catch (e) {}
     currentUser = null;
     localStorage.removeItem("minsu_user");
+    showToast("You've been signed out");
     renderApp();
 }
 function getSavedSignature() { return localStorage.getItem(`minsu_signature_${currentUser?.id}`); }
