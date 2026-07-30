@@ -588,10 +588,20 @@ async def list_clearances(
     query: dict = {}
     if user["role"] == "student":
         query["student_id"] = user["id"]
+        if status:
+            query["overall_status"] = status
     elif user["role"] == "faculty":
-        query["approvals"] = {
-            "$elemMatch": {"office": user.get("office"), "status": "pending"}
-        }
+        office = user.get("office")
+        if status:
+            # Match this office's own decision, not the clearance's overall status,
+            # so faculty can still find clearances they already approved/rejected
+            # even while the clearance as a whole is still pending other offices.
+            query["approvals"] = {"$elemMatch": {"office": office, "status": status}}
+        else:
+            query["approvals"] = {"$elemMatch": {"office": office}}
+    elif status:
+        query["overall_status"] = status
+
     if course:
         query["course"] = course
     if year_level:
@@ -602,8 +612,6 @@ async def list_clearances(
         query["campus"] = campus
     if college:
         query["college"] = college
-    if status:
-        query["overall_status"] = status
 
     clearances = await db.clearances.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
     return {"clearances": clearances}
