@@ -186,11 +186,25 @@ function escapeHtml(s) {
 function getStatusBadge(status) {
     return `<span class="badge badge-${status}">${escapeHtml(status)}</span>`;
 }
-function saveUser(user) { currentUser = user; localStorage.setItem("minsu_user", JSON.stringify(user)); }
+function saveUser(user) {
+    if (!user) { currentUser = null; localStorage.removeItem("minsu_user"); return; }
+    currentUser = user;
+    localStorage.setItem("minsu_user", JSON.stringify(user));
+}
 function loadUser() {
     const saved = localStorage.getItem("minsu_user");
-    if (saved) { currentUser = JSON.parse(saved); return currentUser; }
-    return null;
+    if (!saved) return null;
+    try {
+        const parsed = JSON.parse(saved);
+        if (!parsed || typeof parsed !== "object") throw new Error("invalid stored user");
+        currentUser = parsed;
+        return currentUser;
+    } catch (e) {
+        // Corrupted/invalid value (e.g. "undefined") — clear it instead of crashing the app.
+        localStorage.removeItem("minsu_user");
+        currentUser = null;
+        return null;
+    }
 }
 async function logout() {
     try { if (currentUser) await API.logout(currentUser.id); } catch (e) {}
