@@ -590,6 +590,7 @@ function switchView(view) {
 }
 
 let allClearances = [];
+let currentClearanceView = [];
 
 async function loadDashboardContent() {
     try {
@@ -598,6 +599,8 @@ async function loadDashboardContent() {
             API.getClearances(currentUser.id),
         ]);
         allClearances = clearancesData.clearances || [];
+        currentClearanceView = allClearances;
+        paginationState.clearances = 1;
         renderDashboardContent(statsData, allClearances);
     } catch {
         document.getElementById("dashboard-content").innerHTML = `
@@ -688,10 +691,42 @@ function renderDashboardContent(stats, clearances) {
       </div>
     ` : ""}
 
-    ${isStudent ? renderStudentClearanceSlips(clearances) : renderFacultyClearanceList(clearances)}
+    ${isStudent ? `<div id="clearance-display">${renderStudentClearanceSlips(clearances)}</div>` : `<div id="clearance-display">${renderFacultyClearanceList(clearances)}</div>`}
   `;
 
     container.innerHTML += renderModals();
+}
+
+// ============= PAGINATION =============
+const PAGE_SIZE = 10;
+const paginationState = {};
+
+function getPage(items, key) {
+    const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+    const wanted = paginationState[key] || 1;
+    const page = Math.min(Math.max(1, wanted), totalPages);
+    paginationState[key] = page;
+    const start = (page - 1) * PAGE_SIZE;
+    return { pageItems: items.slice(start, start + PAGE_SIZE), page, totalPages };
+}
+
+function paginationBar(page, totalPages, onChangeFn) {
+    if (totalPages <= 1) return "";
+    const windowSize = 5;
+    let start = Math.max(1, page - Math.floor(windowSize / 2));
+    let end = Math.min(totalPages, start + windowSize - 1);
+    start = Math.max(1, end - windowSize + 1);
+    let pageButtons = "";
+    for (let p = start; p <= end; p++) {
+        pageButtons += `<button class="page-btn ${p === page ? "active" : ""}" onclick="${onChangeFn}(${p})">${p}</button>`;
+    }
+    return `
+    <div class="pagination-bar">
+      <button class="btn btn-sm btn-outline" ${page === 1 ? "disabled" : ""} onclick="${onChangeFn}(${page - 1})">Prev</button>
+      ${pageButtons}
+      <button class="btn btn-sm btn-outline" ${page === totalPages ? "disabled" : ""} onclick="${onChangeFn}(${page + 1})">Next</button>
+      <span class="pagination-info">Page ${page} of ${totalPages}</span>
+    </div>`;
 }
 
 // ============= STUDENT SLIPS =============
@@ -704,7 +739,8 @@ function renderStudentClearanceSlips(clearances) {
         <p>Click "New Clearance" to request your clearance slip.</p>
       </div>`;
     }
-    return `<div class="clearance-slips">${clearances.map((c) => renderClearanceSlip(c)).join("")}</div>`;
+    const { pageItems, page, totalPages } = getPage(clearances, "clearances");
+    return `<div class="clearance-slips">${pageItems.map((c) => renderClearanceSlip(c)).join("")}</div>${paginationBar(page, totalPages, "goToClearancePage")}`;
 }
 
 function renderClearanceSlip(c) {
@@ -787,6 +823,7 @@ function renderFacultyClearanceList(clearances) {
         </div>
       </div>`;
     }
+    const { pageItems, page, totalPages } = getPage(clearances, "clearances");
     return `
     <div class="card">
       <div class="card-header"><h2 class="card-title">Clearance Requests</h2><span class="text-muted" id="clearance-count">${clearances.length} records</span></div>
@@ -798,10 +835,11 @@ function renderFacultyClearanceList(clearances) {
               <th>Course</th><th>Year/Sec</th><th>Semester</th><th>Status</th><th>Action</th>
             </tr></thead>
             <tbody id="clearance-list">
-              ${clearances.map((c) => clearanceRowHtml(c)).join("")}
+              ${pageItems.map((c) => clearanceRowHtml(c)).join("")}
             </tbody>
           </table>
         </div>
+        ${paginationBar(page, totalPages, "goToClearancePage")}
       </div>
     </div>`;
 }
@@ -862,10 +900,20 @@ async function applyFilters() {
     } catch {}
 }
 function updateClearanceList(clearances) {
-    const tbody = document.getElementById("clearance-list");
-    const count = document.getElementById("clearance-count");
-    if (count) count.textContent = `${clearances.length} records`;
-    if (tbody) tbody.innerHTML = clearances.map(clearanceRowHtml).join("");
+    currentClearanceView = clearances;
+    paginationState.clearances = 1;
+    refreshClearanceDisplay();
+}
+function refreshClearanceDisplay() {
+    const container = document.getElementById("clearance-display");
+    if (!container) return;
+    container.innerHTML = currentUser.role === "student"
+        ? renderStudentClearanceSlips(currentClearanceView)
+        : renderFacultyClearanceList(currentClearanceView);
+}
+function goToClearancePage(p) {
+    paginationState.clearances = p;
+    refreshClearanceDisplay();
 }
 
 // ============= MODALS =============
@@ -1123,11 +1171,15 @@ async function submitSignature(action) {
 }
 
 // ============= ADMIN: USERS =============
+let allUsers = [];
+
 async function loadUsersContent() {
     const container = document.getElementById("dashboard-content");
     container.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
     try {
         const { users } = await API.getUsers(currentUser.id);
+        allUsers = users;
+        paginationState.users = 1;
         container.innerHTML = `
       <div class="flex-between dashboard-header">
         <div>
@@ -1143,30 +1195,45 @@ async function loadUsersContent() {
                 <th>Full Name</th><th>Email</th><th>Role</th>
                 <th>Office / Course</th><th>Status</th><th>Registered</th><th>Actions</th>
               </tr></thead>
-              <tbody>
-                ${users.map((u) => `
-                  <tr>
-                    <td class="student-name">${escapeHtml(u.full_name)}</td>
-                    <td>${escapeHtml(u.email)}</td>
-                    <td><span class="badge badge-${u.role === "admin" ? "approved" : u.role === "faculty" ? "pending" : "muted"}">${escapeHtml(u.role)}</span></td>
-                    <td>${escapeHtml(u.office || u.course || "-")}</td>
-                    <td>${u.is_locked
-                        ? '<span class="badge badge-failure" data-testid="user-locked-badge">🔒 Locked</span>'
-                        : '<span class="badge badge-success">Active</span>'}</td>
-                    <td>${u.created_at ? formatDate(u.created_at) : "-"}</td>
-                    <td class="user-actions">
-                      ${u.is_locked ? `<button class="btn btn-sm btn-outline" onclick="unlockUser('${u.id}','${escapeHtml(u.full_name)}')" data-testid="unlock-user-${u.id}">Unlock</button>` : ""}
-                      ${u.id !== currentUser.id ? `<button class="btn btn-sm btn-danger" onclick="confirmDeleteUser('${u.id}','${escapeHtml(u.full_name)}')" data-testid="delete-user-${u.id}">Delete</button>` : '<span class="text-muted">you</span>'}
-                    </td>
-                  </tr>`).join("")}
-              </tbody>
+              <tbody id="users-list"></tbody>
             </table>
           </div>
+          <div id="users-pagination"></div>
         </div>
       </div>`;
+        renderUsersTable();
     } catch {
         container.innerHTML = '<p class="text-danger text-center">Failed to load users</p>';
     }
+}
+function userRowHtml(u) {
+    return `
+      <tr>
+        <td class="student-name">${escapeHtml(u.full_name)}</td>
+        <td>${escapeHtml(u.email)}</td>
+        <td><span class="badge badge-${u.role === "admin" ? "approved" : u.role === "faculty" ? "pending" : "muted"}">${escapeHtml(u.role)}</span></td>
+        <td>${escapeHtml(u.office || u.course || "-")}</td>
+        <td>${u.is_locked
+            ? '<span class="badge badge-failure" data-testid="user-locked-badge">🔒 Locked</span>'
+            : '<span class="badge badge-success">Active</span>'}</td>
+        <td>${u.created_at ? formatDate(u.created_at) : "-"}</td>
+        <td class="user-actions">
+          ${u.is_locked ? `<button class="btn btn-sm btn-outline" onclick="unlockUser('${u.id}','${escapeHtml(u.full_name)}')" data-testid="unlock-user-${u.id}">Unlock</button>` : ""}
+          ${u.id !== currentUser.id ? `<button class="btn btn-sm btn-danger" onclick="confirmDeleteUser('${u.id}','${escapeHtml(u.full_name)}')" data-testid="delete-user-${u.id}">Delete</button>` : '<span class="text-muted">you</span>'}
+        </td>
+      </tr>`;
+}
+function renderUsersTable() {
+    const tbody = document.getElementById("users-list");
+    const pag = document.getElementById("users-pagination");
+    if (!tbody) return;
+    const { pageItems, page, totalPages } = getPage(allUsers, "users");
+    tbody.innerHTML = pageItems.map(userRowHtml).join("");
+    if (pag) pag.innerHTML = paginationBar(page, totalPages, "goToUserPage");
+}
+function goToUserPage(p) {
+    paginationState.users = p;
+    renderUsersTable();
 }
 async function confirmDeleteUser(id, name) {
     if (!confirm(`Delete user "${name}"? This action is permanent and will be audit-logged.`)) return;
@@ -1186,6 +1253,8 @@ async function unlockUser(id, name) {
     } catch {}
 }
 
+let allAuditLogs = [];
+
 // ============= ADMIN: AUDIT =============
 async function loadAuditContent(filters = {}) {
     const container = document.getElementById("dashboard-content");
@@ -1195,6 +1264,8 @@ async function loadAuditContent(filters = {}) {
             API.getAuditLogs(currentUser.id, filters),
             API.getAuditLogActions(currentUser.id),
         ]);
+        allAuditLogs = logs || [];
+        paginationState.audit = 1;
         container.innerHTML = `
       <div class="flex-between dashboard-header">
         <div>
@@ -1231,30 +1302,48 @@ async function loadAuditContent(filters = {}) {
                 <th>Timestamp</th><th>Actor</th><th>Role</th>
                 <th>Action</th><th>Resource</th><th>Status</th><th>IP</th><th>Details</th>
               </tr></thead>
-              <tbody>
-                ${(logs || []).length === 0
-                    ? `<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:2rem;">No audit log entries match these filters.</td></tr>`
-                    : logs.map((e) => `
-                    <tr class="${e.status === "failure" ? "rejected" : ""}">
-                      <td class="audit-ts">${formatDateTime(e.timestamp)}</td>
-                      <td>${escapeHtml(e.actor_email || "-")}</td>
-                      <td>${escapeHtml(e.actor_role || "-")}</td>
-                      <td><code>${escapeHtml(e.action)}</code></td>
-                      <td>${escapeHtml(e.resource_type)}${e.resource_id ? `<br><small class="text-muted">${escapeHtml(e.resource_id).slice(0, 8)}…</small>` : ""}</td>
-                      <td>${getStatusBadge(e.status)}</td>
-                      <td><small>${escapeHtml(e.ip_address || "-")}</small></td>
-                      <td>${e.details && Object.keys(e.details).length
-                        ? `<details><summary>view</summary><pre class="audit-details">${escapeHtml(JSON.stringify(e.details, null, 2))}</pre></details>`
-                        : "-"}</td>
-                    </tr>`).join("")}
-              </tbody>
+              <tbody id="audit-list"></tbody>
             </table>
           </div>
+          <div id="audit-pagination"></div>
         </div>
       </div>`;
+        renderAuditTable();
     } catch {
         container.innerHTML = '<p class="text-danger text-center">Failed to load audit logs</p>';
     }
+}
+function auditRowHtml(e) {
+    return `
+        <tr class="${e.status === "failure" ? "rejected" : ""}">
+          <td class="audit-ts">${formatDateTime(e.timestamp)}</td>
+          <td>${escapeHtml(e.actor_email || "-")}</td>
+          <td>${escapeHtml(e.actor_role || "-")}</td>
+          <td><code>${escapeHtml(e.action)}</code></td>
+          <td>${escapeHtml(e.resource_type)}${e.resource_id ? `<br><small class="text-muted">${escapeHtml(e.resource_id).slice(0, 8)}…</small>` : ""}</td>
+          <td>${getStatusBadge(e.status)}</td>
+          <td><small>${escapeHtml(e.ip_address || "-")}</small></td>
+          <td>${e.details && Object.keys(e.details).length
+            ? `<details><summary>view</summary><pre class="audit-details">${escapeHtml(JSON.stringify(e.details, null, 2))}</pre></details>`
+            : "-"}</td>
+        </tr>`;
+}
+function renderAuditTable() {
+    const tbody = document.getElementById("audit-list");
+    const pag = document.getElementById("audit-pagination");
+    if (!tbody) return;
+    if (allAuditLogs.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:2rem;">No audit log entries match these filters.</td></tr>`;
+        if (pag) pag.innerHTML = "";
+        return;
+    }
+    const { pageItems, page, totalPages } = getPage(allAuditLogs, "audit");
+    tbody.innerHTML = pageItems.map(auditRowHtml).join("");
+    if (pag) pag.innerHTML = paginationBar(page, totalPages, "goToAuditPage");
+}
+function goToAuditPage(p) {
+    paginationState.audit = p;
+    renderAuditTable();
 }
 function applyAuditFilters() {
     const filters = {
