@@ -186,32 +186,16 @@ function escapeHtml(s) {
 function getStatusBadge(status) {
     return `<span class="badge badge-${status}">${escapeHtml(status)}</span>`;
 }
-function saveUser(user) {
-    if (!user) { currentUser = null; localStorage.removeItem("minsu_user"); return; }
-    currentUser = user;
-    localStorage.setItem("minsu_user", JSON.stringify(user));
-}
+function saveUser(user) { currentUser = user; localStorage.setItem("minsu_user", JSON.stringify(user)); }
 function loadUser() {
     const saved = localStorage.getItem("minsu_user");
-    if (!saved) return null;
-    try {
-        const parsed = JSON.parse(saved);
-        if (!parsed || typeof parsed !== "object") throw new Error("invalid stored user");
-        currentUser = parsed;
-        return currentUser;
-    } catch (e) {
-        // Corrupted/invalid value (e.g. "undefined") — clear it instead of crashing the app.
-        localStorage.removeItem("minsu_user");
-        currentUser = null;
-        return null;
-    }
+    if (saved) { currentUser = JSON.parse(saved); return currentUser; }
+    return null;
 }
 async function logout() {
-    if (!confirm("Are you sure you want to sign out?")) return;
     try { if (currentUser) await API.logout(currentUser.id); } catch (e) {}
     currentUser = null;
     localStorage.removeItem("minsu_user");
-    showToast("You've been signed out");
     renderApp();
 }
 function getSavedSignature() { return localStorage.getItem(`minsu_signature_${currentUser?.id}`); }
@@ -296,12 +280,12 @@ function renderLoginPage() {
               </div>
               <div class="form-group">
                 <label>Password</label>
-                <input type="password" id="login-password" placeholder="Enter your password" data-testid="login-password-input" required>
+                <div class="password-field">
+                  <input type="password" id="login-password" placeholder="Enter your password" data-testid="login-password-input" required>
+                  <button type="button" class="password-toggle" data-target="login-password" data-testid="login-password-toggle" aria-label="Show password"></button>
+                </div>
               </div>
               <button type="submit" class="btn btn-primary btn-block btn-lg" data-testid="login-submit-button">Sign In</button>
-              <p class="text-muted text-center" style="margin-top:1rem;font-size:0.85rem;">
-                Default admin: <strong>admin@minsu.edu.ph</strong> / <strong>Admin@MinSU2025</strong>
-              </p>
             </form>
           </div>
 
@@ -317,7 +301,10 @@ function renderLoginPage() {
               </div>
               <div class="form-group">
                 <label>Password</label>
-                <input type="password" id="register-password" placeholder="Create a password" data-testid="register-password-input" required>
+                <div class="password-field">
+                  <input type="password" id="register-password" placeholder="Create a password" data-testid="register-password-input" required>
+                  <button type="button" class="password-toggle" data-target="register-password" data-testid="register-password-toggle" aria-label="Show password"></button>
+                </div>
               </div>
               <div class="form-group">
                 <label>I am a</label>
@@ -411,6 +398,20 @@ function setupLoginEvents() {
         });
     });
 
+    const EYE_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    const EYE_OFF_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+    document.querySelectorAll(".password-toggle").forEach((btn) => {
+        btn.innerHTML = EYE_ICON;
+        btn.addEventListener("click", () => {
+            const input = document.getElementById(btn.dataset.target);
+            if (!input) return;
+            const showing = input.type === "text";
+            input.type = showing ? "password" : "text";
+            btn.innerHTML = showing ? EYE_ICON : EYE_OFF_ICON;
+            btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+        });
+    });
+
     document.getElementById("register-role").addEventListener("change", (e) => {
         document.getElementById("student-fields").classList.toggle("hidden", e.target.value !== "student");
         document.getElementById("faculty-fields").classList.toggle("hidden", e.target.value !== "faculty");
@@ -438,7 +439,7 @@ function setupLoginEvents() {
         const meter = document.createElement("div");
         meter.className = "password-strength";
         meter.innerHTML = '<div class="strength-bar"><span></span></div><div class="strength-hint">Password must be 8+ chars with a letter and a number.</div>';
-        pwEl.parentElement.appendChild(meter);
+        pwEl.closest(".form-group").appendChild(meter);
         pwEl.addEventListener("input", () => {
             const v = pwEl.value || "";
             let s = 0;
